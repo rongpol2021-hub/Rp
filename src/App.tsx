@@ -59,6 +59,15 @@ import CameraCapture from "./components/CameraCapture";
 import SignaturePad from "./components/SignaturePad";
 import { User as FirebaseUser } from "firebase/auth";
 import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  getDocs,
+  getDoc
+} from "firebase/firestore";
+import {
   initAuth,
   googleSignIn,
   logout as googleLogout,
@@ -66,7 +75,8 @@ import {
   listBackupsInDrive,
   downloadBackupFromDrive,
   deleteBackupFromDrive,
-  GoogleDriveFile
+  GoogleDriveFile,
+  db
 } from "./services/googleDrive";
 
 export default function App() {
@@ -303,6 +313,7 @@ export default function App() {
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [driveBackups, setDriveBackups] = useState<GoogleDriveFile[]>([]);
   const [isDriveLoading, setIsDriveLoading] = useState<boolean>(false);
+  const [isDbLoading, setIsDbLoading] = useState<boolean>(true);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
 
@@ -377,75 +388,159 @@ export default function App() {
     }
   };
 
-  // 2. Load / Save from LocalStorage
+  // 2. Load / Save from Cloud Firestore & Local Cache
   useEffect(() => {
-    const storedLogs = localStorage.getItem("alcohol_logs");
-    if (storedLogs) {
-      try {
-        setLogs(JSON.parse(storedLogs));
-      } catch (e) {
-        console.error("Error parsing stored logs. Resets to mock.", e);
-        setLogs(INITIAL_LOGS);
-      }
-    } else {
-      setLogs(INITIAL_LOGS);
-      localStorage.setItem("alcohol_logs", JSON.stringify(INITIAL_LOGS));
-    }
+    let unsubs: (() => void)[] = [];
 
-    const storedEmployees = localStorage.getItem("alcohol_employees");
-    if (storedEmployees) {
+    const initializeFirestoreSync = async () => {
       try {
-        setEmployees(JSON.parse(storedEmployees));
-      } catch (e) {
-        console.error("Error parsing stored employees", e);
-        setEmployees(REGISTERED_EMPLOYEES);
-      }
-    } else {
-      setEmployees(REGISTERED_EMPLOYEES);
-      localStorage.setItem("alcohol_employees", JSON.stringify(REGISTERED_EMPLOYEES));
-    }
+        // 2a. First, check if Firestore is completely empty and seed if necessary.
+        const empSnap = await getDocs(collection(db, "employees"));
+        if (empSnap.empty) {
+          console.log("Firestore is empty. Seeding database with initial/local data...");
+          
+          // Seed employees
+          const localEmployeesStr = localStorage.getItem("alcohol_employees");
+          const initialEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
+          for (const emp of initialEmployees) {
+            await setDoc(doc(db, "employees", emp.id), emp);
+          }
 
-    const storedSettings = localStorage.getItem("alcohol_settings");
-    if (storedSettings) {
+          // Seed logs
+          const localLogsStr = localStorage.getItem("alcohol_logs");
+          const initialLogs = localLogsStr ? JSON.parse(localLogsStr) : INITIAL_LOGS;
+          for (const log of initialLogs) {
+            await setDoc(doc(db, "alcohol_logs", log.id), log);
+          }
+
+          // Seed supervisors
+          const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+          const initialSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
+          for (const s of initialSupervisors) {
+            await setDoc(doc(db, "supervisors", s), { name: s });
+          }
+
+          // Seed departments
+          const localDeptsStr = localStorage.getItem("alcohol_departments");
+          const initialDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
+          for (const d of initialDepts) {
+            await setDoc(doc(db, "departments", d), { name: d });
+          }
+
+          // Seed settings
+          const localSettingsStr = localStorage.getItem("alcohol_settings");
+          const initialSettings = localSettingsStr ? JSON.parse(localSettingsStr) : {
+            defaultPassLimit: 50,
+            companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+            testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+            requireSignature: true,
+            requirePhoto: true,
+            retestGracePeriodMinutes: 15,
+            adminPasscode: "1234",
+            autoBackupToDrive: false
+          };
+          await setDoc(doc(db, "settings", "global"), initialSettings);
+          
+          console.log("Firestore seeding complete!");
+        }
+      } catch (e) {
+        console.error("Error checking or seeding Firestore:", e);
+      }
+
+      // 2b. Setup real-time snapshot listeners for everything
       try {
-        const parsed = JSON.parse(storedSettings);
-        setSettings({
-          retestGracePeriodMinutes: 15,
-          adminPasscode: "1234",
-          autoBackupToDrive: false,
-          ...parsed
+        // 1. Logs
+        const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
+          const fetchedLogs: AlcoholTestLog[] = [];
+          snapshot.forEach((doc) => {
+            fetchedLogs.push(doc.data() as AlcoholTestLog);
+          });
+          // Sort logs by timestamp descending
+          fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          setLogs(fetchedLogs);
+          localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
+        }, (err) => {
+          console.error("Error listening to logs:", err);
         });
-        setWitness(parsed.testerName);
-      } catch (e) {
-        console.error("Error loading settings", e);
-      }
-    }
+        unsubs.push(unsubLogs);
 
-    const storedSupervisors = localStorage.getItem("alcohol_supervisors");
-    if (storedSupervisors) {
-      try {
-        setSupervisors(JSON.parse(storedSupervisors));
-      } catch (e) {
-        console.error("Error loading supervisors", e);
-        setSupervisors(DEFAULT_SUPERVISORS);
-      }
-    } else {
-      setSupervisors(DEFAULT_SUPERVISORS);
-      localStorage.setItem("alcohol_supervisors", JSON.stringify(DEFAULT_SUPERVISORS));
-    }
+        // 2. Employees
+        const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
+          const fetchedEmployees: Employee[] = [];
+          snapshot.forEach((doc) => {
+            fetchedEmployees.push(doc.data() as Employee);
+          });
+          setEmployees(fetchedEmployees);
+          localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
+        }, (err) => {
+          console.error("Error listening to employees:", err);
+        });
+        unsubs.push(unsubEmployees);
 
-    const storedDepartments = localStorage.getItem("alcohol_departments");
-    if (storedDepartments) {
-      try {
-        setDepartments(JSON.parse(storedDepartments));
-      } catch (e) {
-        console.error("Error loading departments", e);
-        setDepartments(DEPARTMENTS);
+        // 3. Supervisors
+        const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
+          const fetchedSupervisors: string[] = [];
+          snapshot.forEach((doc) => {
+            fetchedSupervisors.push(doc.data().name as string);
+          });
+          setSupervisors(fetchedSupervisors);
+          localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
+        }, (err) => {
+          console.error("Error listening to supervisors:", err);
+        });
+        unsubs.push(unsubSupervisors);
+
+        // 4. Departments
+        const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
+          const fetchedDepartments: string[] = [];
+          snapshot.forEach((doc) => {
+            fetchedDepartments.push(doc.data().name as string);
+          });
+          setDepartments(fetchedDepartments);
+          localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
+        }, (err) => {
+          console.error("Error listening to departments:", err);
+        });
+        unsubs.push(unsubDepartments);
+
+        // 5. Settings
+        const unsubSettings = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
+          if (docSnap.exists()) {
+            const parsed = docSnap.data() as AppSettings;
+            setSettings(parsed);
+            setWitness(parsed.testerName);
+            localStorage.setItem("alcohol_settings", JSON.stringify(parsed));
+          } else {
+            // Default settings doc
+            const defaultSettings = {
+              defaultPassLimit: 50,
+              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+              requireSignature: true,
+              requirePhoto: true,
+              retestGracePeriodMinutes: 15,
+              adminPasscode: "1234",
+              autoBackupToDrive: false
+            };
+            setDoc(doc(db, "settings", "global"), defaultSettings);
+          }
+        }, (err) => {
+          console.error("Error listening to settings:", err);
+        });
+        unsubs.push(unsubSettings);
+
+      } catch (err) {
+        console.error("Failed to establish real-time Firestore synchronization:", err);
+      } finally {
+        setIsDbLoading(false);
       }
-    } else {
-      setDepartments(DEPARTMENTS);
-      localStorage.setItem("alcohol_departments", JSON.stringify(DEPARTMENTS));
-    }
+    };
+
+    initializeFirestoreSync();
+
+    return () => {
+      unsubs.forEach(unsub => unsub());
+    };
   }, []);
 
   const triggerAutoBackup = async (
@@ -469,28 +564,112 @@ export default function App() {
     }
   };
 
-  const saveLogs = (updatedLogs: AlcoholTestLog[]) => {
+  const saveLogs = async (updatedLogs: AlcoholTestLog[]) => {
     setLogs(updatedLogs);
     localStorage.setItem("alcohol_logs", JSON.stringify(updatedLogs));
     triggerAutoBackup(updatedLogs, undefined, undefined, undefined);
+
+    try {
+      const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
+      const oldLogsMap = new Map(logs.map(l => [l.id, l]));
+
+      const deletePromises = logs
+        .filter(l => !newLogsMap.has(l.id))
+        .map(l => deleteDoc(doc(db, "alcohol_logs", l.id)));
+
+      const savePromises = updatedLogs
+        .filter(l => {
+          const old = oldLogsMap.get(l.id);
+          return !old || JSON.stringify(old) !== JSON.stringify(l);
+        })
+        .map(l => setDoc(doc(db, "alcohol_logs", l.id), l));
+
+      await Promise.all([...deletePromises, ...savePromises]);
+    } catch (e) {
+      console.error("Error syncing logs to Firestore:", e);
+    }
   };
 
-  const saveEmployees = (updatedEmployees: Employee[]) => {
+  const saveEmployees = async (updatedEmployees: Employee[]) => {
     setEmployees(updatedEmployees);
     localStorage.setItem("alcohol_employees", JSON.stringify(updatedEmployees));
     triggerAutoBackup(undefined, updatedEmployees, undefined, undefined);
+
+    try {
+      const newEmpMap = new Map(updatedEmployees.map(e => [e.id, e]));
+      const oldEmpMap = new Map(employees.map(e => [e.id, e]));
+
+      const deletePromises = employees
+        .filter(e => !newEmpMap.has(e.id))
+        .map(e => deleteDoc(doc(db, "employees", e.id)));
+
+      const savePromises = updatedEmployees
+        .filter(e => {
+          const old = oldEmpMap.get(e.id);
+          return !old || JSON.stringify(old) !== JSON.stringify(e);
+        })
+        .map(e => setDoc(doc(db, "employees", e.id), e));
+
+      await Promise.all([...deletePromises, ...savePromises]);
+    } catch (e) {
+      console.error("Error syncing employees to Firestore:", e);
+    }
   };
 
-  const saveSupervisors = (updatedSupervisors: string[]) => {
+  const saveSupervisors = async (updatedSupervisors: string[]) => {
     setSupervisors(updatedSupervisors);
     localStorage.setItem("alcohol_supervisors", JSON.stringify(updatedSupervisors));
     triggerAutoBackup(undefined, undefined, updatedSupervisors, undefined);
+
+    try {
+      const oldSet = new Set(supervisors);
+      const newSet = new Set(updatedSupervisors);
+
+      const deletePromises = supervisors
+        .filter(name => !newSet.has(name))
+        .map(name => deleteDoc(doc(db, "supervisors", name)));
+
+      const savePromises = updatedSupervisors
+        .filter(name => !oldSet.has(name))
+        .map(name => setDoc(doc(db, "supervisors", name), { name }));
+
+      await Promise.all([...deletePromises, ...savePromises]);
+    } catch (e) {
+      console.error("Error syncing supervisors to Firestore:", e);
+    }
   };
 
-  const saveDepartments = (updatedDepartments: string[]) => {
+  const saveDepartments = async (updatedDepartments: string[]) => {
     setDepartments(updatedDepartments);
     localStorage.setItem("alcohol_departments", JSON.stringify(updatedDepartments));
     triggerAutoBackup(undefined, undefined, undefined, updatedDepartments);
+
+    try {
+      const oldSet = new Set(departments);
+      const newSet = new Set(updatedDepartments);
+
+      const deletePromises = departments
+        .filter(name => !newSet.has(name))
+        .map(name => deleteDoc(doc(db, "departments", name)));
+
+      const savePromises = updatedDepartments
+        .filter(name => !oldSet.has(name))
+        .map(name => setDoc(doc(db, "departments", name), { name }));
+
+      await Promise.all([...deletePromises, ...savePromises]);
+    } catch (e) {
+      console.error("Error syncing departments to Firestore:", e);
+    }
+  };
+
+  const saveSettings = async (updatedSettings: AppSettings) => {
+    setSettings(updatedSettings);
+    localStorage.setItem("alcohol_settings", JSON.stringify(updatedSettings));
+    try {
+      await setDoc(doc(db, "settings", "global"), updatedSettings);
+    } catch (e) {
+      console.error("Error syncing settings to Firestore:", e);
+    }
   };
 
   // Google Drive Auth initialization on component mount
@@ -623,9 +802,8 @@ export default function App() {
   };
 
   const handleSaveSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings);
+    saveSettings(newSettings);
     setWitness(newSettings.testerName);
-    localStorage.setItem("alcohol_settings", JSON.stringify(newSettings));
     setShowSettings(false);
   };
 
@@ -1612,6 +1790,30 @@ export default function App() {
     saveLogs(updatedLogs);
     showNotification(`บันทึกหมายเหตุ เกินกำหนดเวลา สำหรับ ${empName} เรียบร้อยแล้ว`, "success", "บันทึกสำเร็จ");
   };
+
+  if (isDbLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-white border border-slate-200 p-8 rounded-3xl shadow-xl max-w-sm w-full text-center space-y-5">
+          <div className="flex justify-center">
+            <div className="p-4 bg-indigo-50 text-indigo-600 rounded-2xl relative">
+              <RefreshCw size={36} className="animate-spin text-indigo-600" />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <h2 className="text-base font-bold text-slate-800 font-sans">กำลังเชื่อมต่อฐานข้อมูลร่วม (Cloud DB)</h2>
+            <p className="text-xs text-slate-400 leading-normal font-sans font-medium">
+              ประสานข้อมูลรายชื่อพนักงานและประวัติเป่าแอลกอฮอล์ทั้งหมด<br />
+              ให้แสดงผลเหมือนกันทุกเบราว์เซอร์อัตโนมัติ
+            </p>
+          </div>
+          <div className="text-[10px] bg-slate-50 border border-slate-100 text-slate-500 font-mono py-1.5 px-3 rounded-lg inline-block">
+            Project ID: gen-lang-client-0500124353
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div id="main-applet-root" className="min-h-screen bg-slate-50 text-slate-930 flex flex-col p-3 md:p-6 select-none selection:bg-indigo-500/20 antialiased font-sans">
@@ -3899,8 +4101,7 @@ export default function App() {
                                       checked={settings.autoBackupToDrive || false}
                                       onChange={(e) => {
                                         const updatedSettings = { ...settings, autoBackupToDrive: e.target.checked };
-                                        setSettings(updatedSettings);
-                                        localStorage.setItem("alcohol_settings", JSON.stringify(updatedSettings));
+                                        saveSettings(updatedSettings);
                                         if (e.target.checked) {
                                           showNotification("เปิดระบบสำรองข้อมูลอัตโนมัติขึ้น Google Drive เรียบร้อยแล้ว", "success", "เปิดระบบ Auto-Backup");
                                           triggerAutoBackup(undefined, undefined, undefined, undefined);

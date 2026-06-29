@@ -1,0 +1,100 @@
+{
+  "entities": {
+    "Employee": {
+      "title": "Employee",
+      "description": "Employee registered in the system",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "department": { "type": "string" },
+        "role": { "type": "string" },
+        "photo": { "type": "string" }
+      },
+      "required": ["id", "name", "department"]
+    },
+    "AlcoholTestLog": {
+      "title": "AlcoholTestLog",
+      "description": "Alcohol test result record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "employeeName": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "department": { "type": "string" },
+        "alcoholLevel": { "type": "number" },
+        "passLimit": { "type": "number" },
+        "isPassed": { "type": "boolean" },
+        "symptoms": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "photo": { "type": "string" },
+        "signature": { "type": "string" },
+        "notes": { "type": "string" },
+        "witness": { "type": "string" },
+        "isLeave": { "type": "boolean" }
+      },
+      "required": ["id", "timestamp", "employeeName", "alcoholLevel", "passLimit", "isPassed"]
+    },
+    "Supervisor": {
+      "title": "Supervisor",
+      "description": "Supervisor / Validator name",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Department name",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application settings",
+      "type": "object",
+      "properties": {
+        "defaultPassLimit": { "type": "number" },
+        "companyName": { "type": "string" },
+        "testerName": { "type": "string" },
+        "requireSignature": { "type": "boolean" },
+        "requirePhoto": { "type": "boolean" },
+        "retestGracePeriodMinutes": { "type": "number" },
+        "adminPasscode": { "type": "string" },
+        "autoBackupToDrive": { "type": "boolean" }
+      },
+      "required": ["defaultPassLimit", "companyName", "testerName", "requireSignature", "requirePhoto", "retestGracePeriodMinutes", "adminPasscode"]
+    }
+  },
+  "firestore": {
+    "employees": {
+      "schema": "Employee",
+      "description": "Collection of registered employees"
+    },
+    "alcohol_logs": {
+      "schema": "AlcoholTestLog",
+      "description": "Collection of alcohol screening logs"
+    },
+    "supervisors": {
+      "schema": "Supervisor",
+      "description": "Collection of supervisors"
+    },
+    "departments": {
+      "schema": "Department",
+      "description": "Collection of departments"
+    },
+    "settings": {
+      "schema": "AppSettings",
+      "description": "Shared application settings documents"
+    }
+  }
+}
