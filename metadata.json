@@ -1,0 +1,10 @@
+{
+  "name": "Daily Alcohol Test Log",
+  "description": "ระบบบันทึกการเป่าแอลกอฮอล์รายวัน รองรับการสแกนด้วยกล้อง, เซ็นลายเซ็น, แสดงผลผ่าน/ไม่ผ่านพร้อมรายงานวิเคราะห์สรุปผล (Daily Alcohol Breathalyzer Log with Camera input, Signature Canvas, Pass/Fail results and dashboard reports)",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
