@@ -997,13 +997,26 @@ export default function App() {
       }
     }
 
+    let finalDept = isTestModePersonal ? "ตรวจวัดส่วนบุคคล" : department;
+    let finalEmpId = isTestModePersonal ? "PERSONAL" : (employeeId.trim() || undefined);
+
+    if (!isTestModePersonal && employeeName.trim()) {
+      const match = employees.find(emp => emp.name.trim().toLowerCase() === employeeName.trim().toLowerCase());
+      if (match) {
+        finalDept = match.department;
+        if (!finalEmpId) {
+          finalEmpId = match.id;
+        }
+      }
+    }
+
     const testId = `LOG-${Date.now().toString().slice(-6)}`;
     const newLog: AlcoholTestLog = {
       id: testId,
       timestamp: new Date().toISOString(),
       employeeName: employeeName.trim(),
-      employeeId: isTestModePersonal ? "PERSONAL" : (employeeId.trim() || undefined),
-      department: isTestModePersonal ? "ตรวจวัดส่วนบุคคล" : department,
+      employeeId: finalEmpId,
+      department: finalDept,
       alcoholLevel,
       passLimit: getPassLimit(),
       isPassed: isPassedResult,
@@ -1624,9 +1637,28 @@ export default function App() {
     return true;
   };
 
-  // Helper to filter logs by selected dashboard calendar date filter
+  // Helper to filter logs by selected dashboard calendar date filter, department, and search query
   const getFilteredLogsByDate = (targetLogs: AlcoholTestLog[]) => {
-    return targetLogs.filter(log => checkLogMatchesCalendar(log.timestamp));
+    return targetLogs.filter(log => {
+      // 1. Calendar date filter
+      if (!checkLogMatchesCalendar(log.timestamp)) return false;
+
+      // 2. Department filter
+      if (deptFilter !== "ALL" && log.department !== deptFilter) return false;
+
+      // 3. Search query filter
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        const matchesSearch = 
+          log.employeeName.toLowerCase().includes(query) ||
+          (log.employeeId && log.employeeId.toLowerCase().includes(query)) ||
+          (log.department && log.department.toLowerCase().includes(query)) ||
+          log.id.toLowerCase().includes(query);
+        if (!matchesSearch) return false;
+      }
+
+      return true;
+    });
   };
 
   // Compute logs for the dashboard
@@ -1778,16 +1810,27 @@ export default function App() {
             const timeLimit = failTime + gracePeriodMs;
             const timeLeftMs = timeLimit - Date.now();
             
-            list.push({
-              employeeName: latestLog.employeeName,
-              employeeId: latestLog.employeeId,
-              department: latestLog.department,
-              latestAlcoholLevel: latestLog.alcoholLevel,
-              latestTimestamp: latestLog.timestamp,
-              latestLogId: latestLog.id,
-              timeLeftMs,
-              isExpired: timeLeftMs <= 0,
-            });
+            // Apply department filter
+            const matchesDept = deptFilter === "ALL" || latestLog.department === deptFilter;
+            
+            // Apply search query filter
+            const matchesSearch = !searchQuery.trim() || 
+              latestLog.employeeName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              (latestLog.employeeId && latestLog.employeeId.toLowerCase().includes(searchQuery.toLowerCase())) ||
+              (latestLog.department && latestLog.department.toLowerCase().includes(searchQuery.toLowerCase()));
+
+            if (matchesDept && matchesSearch) {
+              list.push({
+                employeeName: latestLog.employeeName,
+                employeeId: latestLog.employeeId,
+                department: latestLog.department,
+                latestAlcoholLevel: latestLog.alcoholLevel,
+                latestTimestamp: latestLog.timestamp,
+                latestLogId: latestLog.id,
+                timeLeftMs,
+                isExpired: timeLeftMs <= 0,
+              });
+            }
           }
         }
       }
