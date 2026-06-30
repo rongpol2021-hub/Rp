@@ -314,6 +314,7 @@ export default function App() {
   const [driveBackups, setDriveBackups] = useState<GoogleDriveFile[]>([]);
   const [isDriveLoading, setIsDriveLoading] = useState<boolean>(false);
   const [isDbLoading, setIsDbLoading] = useState<boolean>(true);
+  const [dbStatus, setDbStatus] = useState<"connecting" | "connected" | "error" | "offline">("connecting");
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
 
@@ -394,6 +395,7 @@ export default function App() {
 
     const initializeFirestoreSync = async () => {
       try {
+        setDbStatus("connecting");
         // 2a. First, check if Firestore is completely empty and seed if necessary.
         const empSnap = await getDocs(collection(db, "employees"));
         if (empSnap.empty) {
@@ -445,10 +447,22 @@ export default function App() {
         }
       } catch (e) {
         console.error("Error checking or seeding Firestore:", e);
+        setDbStatus("error");
       }
 
       // 2b. Setup real-time snapshot listeners for everything
       try {
+        let loadedCounts = 0;
+        const totalListeners = 5;
+
+        const checkAllLoaded = () => {
+          loadedCounts++;
+          if (loadedCounts >= totalListeners) {
+            setDbStatus("connected");
+            setIsDbLoading(false);
+          }
+        };
+
         // 1. Logs
         const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
           const fetchedLogs: AlcoholTestLog[] = [];
@@ -459,8 +473,11 @@ export default function App() {
           fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
           setLogs(fetchedLogs);
           localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
+          checkAllLoaded();
         }, (err) => {
           console.error("Error listening to logs:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
         });
         unsubs.push(unsubLogs);
 
@@ -472,8 +489,11 @@ export default function App() {
           });
           setEmployees(fetchedEmployees);
           localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
+          checkAllLoaded();
         }, (err) => {
           console.error("Error listening to employees:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
         });
         unsubs.push(unsubEmployees);
 
@@ -485,8 +505,11 @@ export default function App() {
           });
           setSupervisors(fetchedSupervisors);
           localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
+          checkAllLoaded();
         }, (err) => {
           console.error("Error listening to supervisors:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
         });
         unsubs.push(unsubSupervisors);
 
@@ -498,8 +521,11 @@ export default function App() {
           });
           setDepartments(fetchedDepartments);
           localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
+          checkAllLoaded();
         }, (err) => {
           console.error("Error listening to departments:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
         });
         unsubs.push(unsubDepartments);
 
@@ -524,14 +550,17 @@ export default function App() {
             };
             setDoc(doc(db, "settings", "global"), defaultSettings);
           }
+          checkAllLoaded();
         }, (err) => {
           console.error("Error listening to settings:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
         });
         unsubs.push(unsubSettings);
 
       } catch (err) {
         console.error("Failed to establish real-time Firestore synchronization:", err);
-      } finally {
+        setDbStatus("error");
         setIsDbLoading(false);
       }
     };
@@ -1840,6 +1869,35 @@ export default function App() {
             <p className="text-xs text-slate-500 font-medium font-sans mt-0.5">
               {settings.companyName}
             </p>
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              <span className={`inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                dbStatus === "connected" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
+                dbStatus === "connecting" ? "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse" :
+                "bg-rose-50 text-rose-700 border border-rose-200"
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  dbStatus === "connected" ? "bg-emerald-500 animate-pulse" :
+                  dbStatus === "connecting" ? "bg-amber-500" :
+                  "bg-rose-500"
+                }`} />
+                {dbStatus === "connected" ? "ซิงค์คลาวด์เรียบร้อย (Cloud Synced)" :
+                 dbStatus === "connecting" ? "กำลังเชื่อมคลาวด์..." :
+                 "เชื่อมต่อคลาวด์ผิดพลาด (Offline)"}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("คุณต้องการล้างแคชเครื่องและบังคับดึงข้อมูลใหม่จากฐานข้อมูล Cloud ใช่หรือไม่?")) {
+                    localStorage.clear();
+                    window.location.reload();
+                  }
+                }}
+                className="text-[10px] text-indigo-600 hover:text-indigo-800 font-medium transition hover:underline cursor-pointer"
+                title="ล้างข้อมูลแคชสำรองในเครื่องและโหลดทุกอย่างใหม่จากคลาวด์ทันที"
+              >
+                (บังคับดึงข้อมูลใหม่)
+              </button>
+            </div>
           </div>
         </div>
 
