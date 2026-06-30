@@ -1186,6 +1186,11 @@ export default function App() {
         "คุณแน่ใจหรือไม่ว่าต้องการลบประวัติการเป่าแอลกอฮอล์รายการนี้ออกจากระบบ? (การลบนี้ใช้ผลทันทีและไม่สามารถดึงกลับมาได้)",
         async () => {
           try {
+            // Update local state and localStorage first for instant responsiveness
+            const updatedLogs = logs.filter(l => l.id !== id);
+            setLogs(updatedLogs);
+            localStorage.setItem("alcohol_logs", JSON.stringify(updatedLogs));
+
             await deleteDoc(doc(db, "alcohol_logs", id));
             if (selectedLog?.id === id) {
               setSelectedLog(null);
@@ -1361,6 +1366,11 @@ export default function App() {
         `คุณต้องการลบคุณ "${name}" (รหัส: ${id}) ออกจากฐานข้อมูลรายชื่อพนักงานจริงประจำคลังสินค้าใช่หรือไม่?`,
         async () => {
           try {
+            // Update local state and localStorage first for instant responsiveness
+            const updatedEmployees = employees.filter(e => e.id !== id);
+            setEmployees(updatedEmployees);
+            localStorage.setItem("alcohol_employees", JSON.stringify(updatedEmployees));
+
             await deleteDoc(doc(db, "employees", id));
             showNotification(`ลบพนักงาน "${name}" ออกจากฐานข้อมูลระบบแล้ว`, "success", "ลบพนักงานสำเร็จ");
           } catch (e) {
@@ -2737,11 +2747,12 @@ export default function App() {
                                   `คุณต้องการลบชื่อ "${name}" ออกจากระบบรายชื่อด่วนใช่หรือไม่?`,
                                   async () => {
                                     try {
-                                      await deleteDoc(doc(db, "supervisors", name));
                                       const updated = supervisors.filter(s => s !== name);
+                                      saveSupervisors(updated);
                                       if (witness === name) {
                                         setWitness(updated[0] || "");
                                       }
+                                      await deleteDoc(doc(db, "supervisors", name));
                                       showNotification(`ลบชื่อผู้บันทึก "${name}" สำเร็จ`, "info", "ลบสำเร็จ");
                                     } catch (e) {
                                       console.error("Error deleting supervisor:", e);
@@ -4255,6 +4266,8 @@ export default function App() {
                                               `คุณแน่ใจหรือไม่ว่าต้องการลบแผนก "${dept}" ออกจากรายการแผนกสำหรับการคัดกรอง? (พนักงานที่สังกัดนี้จะไม่ถูกลบ)`,
                                               async () => {
                                                 try {
+                                                  const updated = departments.filter(d => d !== dept);
+                                                  saveDepartments(updated);
                                                   await deleteDoc(doc(db, "departments", dept));
                                                   showNotification(`ลบแแผนก "${dept}" ออกจากฐานข้อมูลเรียบร้อย`, "success", "ลบสำเร็จ");
                                                 } catch (e) {
