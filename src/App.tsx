@@ -431,6 +431,8 @@ export default function App() {
   // 2. Load / Save from Cloud Firestore & Local Cache
   useEffect(() => {
     let unsubs: (() => void)[] = [];
+    let isLoaded = false;
+    let timeoutId: any = null;
     const initialLoadMap = {
       logs: true,
       employees: true,
@@ -442,6 +444,57 @@ export default function App() {
     const initializeFirestoreSync = async () => {
       setDbStatus("connecting");
 
+      // Fallback timeout of 12 seconds to load from local storage if firestore is slow or offline
+      timeoutId = setTimeout(() => {
+        if (!isLoaded) {
+          console.warn("Firestore sync timed out. Falling back to local storage...");
+          setDbStatus("offline");
+          
+          // Load from localStorage as fallback
+          const localLogsStr = localStorage.getItem("alcohol_logs");
+          const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
+          logsRef.current = localLogs;
+          setLogs(localLogs);
+
+          const localEmployeesStr = localStorage.getItem("alcohol_employees");
+          const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
+          employeesRef.current = localEmployees;
+          setEmployees(localEmployees);
+
+          const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+          const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
+          supervisorsRef.current = localSupervisors;
+          setSupervisors(localSupervisors);
+
+          const localDeptsStr = localStorage.getItem("alcohol_departments");
+          const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
+          departmentsRef.current = localDepts;
+          setDepartments(localDepts);
+
+          const localSettingsStr = localStorage.getItem("alcohol_settings");
+          if (localSettingsStr) {
+            const parsed = JSON.parse(localSettingsStr);
+            setSettings(parsed);
+            setWitness(parsed.testerName);
+          } else {
+            const defaultSettings = {
+              defaultPassLimit: 50,
+              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+              requireSignature: true,
+              requirePhoto: true,
+              retestGracePeriodMinutes: 15,
+              adminPasscode: "1234",
+              autoBackupToDrive: false
+            };
+            setSettings(defaultSettings);
+            setWitness(defaultSettings.testerName);
+          }
+
+          setIsDbLoading(false);
+        }
+      }, 12000);
+
       // 2a. Setup real-time snapshot listeners for everything first (non-blocking)
       try {
         let loadedCounts = 0;
@@ -450,6 +503,8 @@ export default function App() {
         const checkAllLoaded = () => {
           loadedCounts++;
           if (loadedCounts >= totalListeners) {
+            isLoaded = true;
+            if (timeoutId) clearTimeout(timeoutId);
             setDbStatus("connected");
             setIsDbLoading(false);
           }
@@ -691,6 +746,7 @@ export default function App() {
     initializeFirestoreSync();
 
     return () => {
+      if (timeoutId) clearTimeout(timeoutId);
       unsubs.forEach(unsub => unsub());
     };
   }, []);

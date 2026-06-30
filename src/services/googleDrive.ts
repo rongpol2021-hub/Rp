@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
   projectId: "gen-lang-client-0500124353",
@@ -14,7 +14,9 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, "ai-studio-dailyalcoholtest-580a2749-d0ed-4423-aa90-10ee0a7565fb");
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+}, "ai-studio-dailyalcoholtest-580a2749-d0ed-4423-aa90-10ee0a7565fb");
 
 const provider = new GoogleAuthProvider();
 // Google Drive scopes as requested and approved
