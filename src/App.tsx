@@ -602,19 +602,22 @@ export default function App() {
     }
   };
 
-  const saveLogs = async (updatedLogs: AlcoholTestLog[]) => {
+  const saveLogs = async (updatedLogs: AlcoholTestLog[], isFullOverwrite: boolean = false) => {
     setLogs(updatedLogs);
     localStorage.setItem("alcohol_logs", JSON.stringify(updatedLogs));
     triggerAutoBackup(updatedLogs, undefined, undefined, undefined);
 
     try {
       const currentLogsInDb = logsRef.current;
-      const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
       const oldLogsMap = new Map(currentLogsInDb.map(l => [l.id, l]));
 
-      const deletePromises = currentLogsInDb
-        .filter(l => !newLogsMap.has(l.id))
-        .map(l => deleteDoc(doc(db, "alcohol_logs", l.id)));
+      let deletePromises: Promise<void>[] = [];
+      if (isFullOverwrite) {
+        const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
+        deletePromises = currentLogsInDb
+          .filter(l => !newLogsMap.has(l.id))
+          .map(l => deleteDoc(doc(db, "alcohol_logs", l.id)));
+      }
 
       const savePromises = updatedLogs
         .filter(l => {
@@ -629,19 +632,22 @@ export default function App() {
     }
   };
 
-  const saveEmployees = async (updatedEmployees: Employee[]) => {
+  const saveEmployees = async (updatedEmployees: Employee[], isFullOverwrite: boolean = false) => {
     setEmployees(updatedEmployees);
     localStorage.setItem("alcohol_employees", JSON.stringify(updatedEmployees));
     triggerAutoBackup(undefined, updatedEmployees, undefined, undefined);
 
     try {
       const currentEmployeesInDb = employeesRef.current;
-      const newEmpMap = new Map(updatedEmployees.map(e => [e.id, e]));
       const oldEmpMap = new Map(currentEmployeesInDb.map(e => [e.id, e]));
 
-      const deletePromises = currentEmployeesInDb
-        .filter(e => !newEmpMap.has(e.id))
-        .map(e => deleteDoc(doc(db, "employees", e.id)));
+      let deletePromises: Promise<void>[] = [];
+      if (isFullOverwrite) {
+        const newEmpMap = new Map(updatedEmployees.map(e => [e.id, e]));
+        deletePromises = currentEmployeesInDb
+          .filter(e => !newEmpMap.has(e.id))
+          .map(e => deleteDoc(doc(db, "employees", e.id)));
+      }
 
       const savePromises = updatedEmployees
         .filter(e => {
@@ -656,7 +662,7 @@ export default function App() {
     }
   };
 
-  const saveSupervisors = async (updatedSupervisors: string[]) => {
+  const saveSupervisors = async (updatedSupervisors: string[], isFullOverwrite: boolean = false) => {
     setSupervisors(updatedSupervisors);
     localStorage.setItem("alcohol_supervisors", JSON.stringify(updatedSupervisors));
     triggerAutoBackup(undefined, undefined, updatedSupervisors, undefined);
@@ -664,11 +670,14 @@ export default function App() {
     try {
       const currentSupervisorsInDb = supervisorsRef.current;
       const oldSet = new Set(currentSupervisorsInDb);
-      const newSet = new Set(updatedSupervisors);
 
-      const deletePromises = currentSupervisorsInDb
-        .filter(name => !newSet.has(name))
-        .map(name => deleteDoc(doc(db, "supervisors", name)));
+      let deletePromises: Promise<void>[] = [];
+      if (isFullOverwrite) {
+        const newSet = new Set(updatedSupervisors);
+        deletePromises = currentSupervisorsInDb
+          .filter(name => !newSet.has(name))
+          .map(name => deleteDoc(doc(db, "supervisors", name)));
+      }
 
       const savePromises = updatedSupervisors
         .filter(name => !oldSet.has(name))
@@ -680,7 +689,7 @@ export default function App() {
     }
   };
 
-  const saveDepartments = async (updatedDepartments: string[]) => {
+  const saveDepartments = async (updatedDepartments: string[], isFullOverwrite: boolean = false) => {
     setDepartments(updatedDepartments);
     localStorage.setItem("alcohol_departments", JSON.stringify(updatedDepartments));
     triggerAutoBackup(undefined, undefined, undefined, updatedDepartments);
@@ -688,11 +697,14 @@ export default function App() {
     try {
       const currentDepartmentsInDb = departmentsRef.current;
       const oldSet = new Set(currentDepartmentsInDb);
-      const newSet = new Set(updatedDepartments);
 
-      const deletePromises = currentDepartmentsInDb
-        .filter(name => !newSet.has(name))
-        .map(name => deleteDoc(doc(db, "departments", name)));
+      let deletePromises: Promise<void>[] = [];
+      if (isFullOverwrite) {
+        const newSet = new Set(updatedDepartments);
+        deletePromises = currentDepartmentsInDb
+          .filter(name => !newSet.has(name))
+          .map(name => deleteDoc(doc(db, "departments", name)));
+      }
 
       const savePromises = updatedDepartments
         .filter(name => !oldSet.has(name))
@@ -801,10 +813,10 @@ export default function App() {
         try {
           const data = await downloadBackupFromDrive(googleToken, fileId);
           if (data && (data.logs || data.employees)) {
-            if (data.logs) saveLogs(data.logs);
-            if (data.employees) saveEmployees(data.employees);
-            if (data.supervisors) saveSupervisors(data.supervisors);
-            if (data.departments) saveDepartments(data.departments);
+            if (data.logs) saveLogs(data.logs, true);
+            if (data.employees) saveEmployees(data.employees, true);
+            if (data.supervisors) saveSupervisors(data.supervisors, true);
+            if (data.departments) saveDepartments(data.departments, true);
             
             showNotification(`ฟื้นฟูระบบข้อมูลจากสำรอง "${fileName}" เรียบร้อยแล้ว!`, "success", "คืนค่าระบบสำเร็จ");
           } else {
@@ -1045,13 +1057,17 @@ export default function App() {
       triggerConfirmation(
         "ยืนยันการลบประวัติการตรวจ",
         "คุณแน่ใจหรือไม่ว่าต้องการลบประวัติการเป่าแอลกอฮอล์รายการนี้ออกจากระบบ? (การลบนี้ใช้ผลทันทีและไม่สามารถดึงกลับมาได้)",
-        () => {
-          const updated = logs.filter(log => log.id !== id);
-          saveLogs(updated);
-          if (selectedLog?.id === id) {
-            setSelectedLog(null);
+        async () => {
+          try {
+            await deleteDoc(doc(db, "alcohol_logs", id));
+            if (selectedLog?.id === id) {
+              setSelectedLog(null);
+            }
+            showNotification("ลบประวัติการเป่าแอลกอฮอล์เรียบร้อยแล้ว", "success", "ลบสำเร็จ");
+          } catch (e) {
+            console.error("Error deleting log:", e);
+            showNotification("เกิดข้อผิดพลาดในการลบข้อมูล", "error", "ลบล้มเหลว");
           }
-          showNotification("ลบประวัติการเป่าแอลกอฮอล์เรียบร้อยแล้ว", "success", "ลบสำเร็จ");
         }
       );
     });
@@ -1063,10 +1079,17 @@ export default function App() {
       triggerConfirmation(
         "⚠️ ลบประวัติการตรวจทั้งหมด",
         "คุณต้องการล้างประวัติการตรวจวัดแอลกอฮอล์ทั้งหมดออกจากระบบ (รวมถึงข้อมูลจำลองและข้อมูลทดสอบทั้งหมด) ใช่หรือไม่? รายการทั้งหมดจะหายไปอย่างถาวร!",
-        () => {
-          saveLogs([]);
-          setSelectedLog(null);
-          showNotification("รีเซ็ตล้างประวัติการทดสอบคู่มือและตัวอย่างทั้งหมดเรียบร้อยแล้ว", "info", "ล้างระบบเรียบร้อย");
+        async () => {
+          try {
+            const snapshot = await getDocs(collection(db, "alcohol_logs"));
+            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "alcohol_logs", d.id)));
+            await Promise.all(deletePromises);
+            setSelectedLog(null);
+            showNotification("รีเซ็ตล้างประวัติการทดสอบคู่มือและตัวอย่างทั้งหมดเรียบร้อยแล้ว", "info", "ล้างระบบเรียบร้อย");
+          } catch (e) {
+            console.error("Error resetting all logs:", e);
+            showNotification("เกิดข้อผิดพลาดในการล้างข้อมูล", "error", "ล้างล้มเหลว");
+          }
         },
         "ลบทั้งหมดถาวร"
       );
@@ -1209,10 +1232,14 @@ export default function App() {
       triggerConfirmation(
         "ยืนยันการลบรายชื่อพนักงาน",
         `คุณต้องการลบคุณ "${name}" (รหัส: ${id}) ออกจากฐานข้อมูลรายชื่อพนักงานจริงประจำคลังสินค้าใช่หรือไม่?`,
-        () => {
-          const updated = employees.filter(emp => emp.id !== id);
-          saveEmployees(updated);
-          showNotification(`ลบพนักงาน "${name}" ออกจากฐานข้อมูลระบบแล้ว`, "success", "ลบพนักงานสำเร็จ");
+        async () => {
+          try {
+            await deleteDoc(doc(db, "employees", id));
+            showNotification(`ลบพนักงาน "${name}" ออกจากฐานข้อมูลระบบแล้ว`, "success", "ลบพนักงานสำเร็จ");
+          } catch (e) {
+            console.error("Error deleting employee:", e);
+            showNotification("เกิดข้อผิดพลาดในการลบพนักงาน", "error", "ลบล้มเหลว");
+          }
         }
       );
     });
@@ -1223,9 +1250,16 @@ export default function App() {
       triggerConfirmation(
         "⚠️ ยืนยันการลบรายชื่อพนักงานทั้งหมด",
         `คุณต้องการลบรายชื่อพนักงานทั้งหมดจำนวน ${employees.length} คน ออกจากฐานข้อมูลระบบคัดกรองใช่หรือไม่? (การดำเนินการนี้ไม่สามารถย้อนกลับได้)`,
-        () => {
-          saveEmployees([]);
-          showNotification("ลบรายชื่อพนักงานทั้งหมดสำเร็จแล้ว", "success", "ลบข้อมูลสำเร็จ");
+        async () => {
+          try {
+            const snapshot = await getDocs(collection(db, "employees"));
+            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "employees", d.id)));
+            await Promise.all(deletePromises);
+            showNotification("ลบรายชื่อพนักงานทั้งหมดสำเร็จแล้ว", "success", "ลบข้อมูลสำเร็จ");
+          } catch (e) {
+            console.error("Error deleting all employees:", e);
+            showNotification("เกิดข้อผิดพลาดในการลบพนักงานทั้งหมด", "error", "ลบล้มเหลว");
+          }
         }
       );
     });
@@ -2544,13 +2578,18 @@ export default function App() {
                                 triggerConfirmation(
                                   "ลบรายชื่อผู้บันทึกผล",
                                   `คุณต้องการลบชื่อ "${name}" ออกจากระบบรายชื่อด่วนใช่หรือไม่?`,
-                                  () => {
-                                    const updated = supervisors.filter(s => s !== name);
-                                    saveSupervisors(updated);
-                                    if (witness === name) {
-                                      setWitness(updated[0] || "");
+                                  async () => {
+                                    try {
+                                      await deleteDoc(doc(db, "supervisors", name));
+                                      const updated = supervisors.filter(s => s !== name);
+                                      if (witness === name) {
+                                        setWitness(updated[0] || "");
+                                      }
+                                      showNotification(`ลบชื่อผู้บันทึก "${name}" สำเร็จ`, "info", "ลบสำเร็จ");
+                                    } catch (e) {
+                                      console.error("Error deleting supervisor:", e);
+                                      showNotification("เกิดข้อผิดพลาดในการลบข้อมูล", "error", "ลบล้มเหลว");
                                     }
-                                    showNotification(`ลบชื่อผู้บันทึก "${name}" สำเร็จ`, "info", "ลบสำเร็จ");
                                   }
                                 );
                               });
@@ -4057,10 +4096,14 @@ export default function App() {
                                             triggerConfirmation(
                                               "ยืนยันการลบแผนกประจำสังกัด",
                                               `คุณแน่ใจหรือไม่ว่าต้องการลบแผนก "${dept}" ออกจากรายการแผนกสำหรับการคัดกรอง? (พนักงานที่สังกัดนี้จะไม่ถูกลบ)`,
-                                              () => {
-                                                const updated = departments.filter(d => d !== dept);
-                                                saveDepartments(updated);
-                                                showNotification(`ลบแแผนก "${dept}" ออกจากฐานข้อมูลเรียบร้อย`, "success", "ลบสำเร็จ");
+                                              async () => {
+                                                try {
+                                                  await deleteDoc(doc(db, "departments", dept));
+                                                  showNotification(`ลบแแผนก "${dept}" ออกจากฐานข้อมูลเรียบร้อย`, "success", "ลบสำเร็จ");
+                                                } catch (e) {
+                                                  console.error("Error deleting department:", e);
+                                                  showNotification("เกิดข้อผิดพลาดในการลบแผนก", "error", "ลบล้มเหลว");
+                                                }
                                               }
                                             );
                                           });
