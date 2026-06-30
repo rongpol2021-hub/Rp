@@ -317,6 +317,11 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState<"connecting" | "connected" | "error" | "offline">("connecting");
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
+  const logsRef = useRef<AlcoholTestLog[]>([]);
+  const employeesRef = useRef<Employee[]>([]);
+  const supervisorsRef = useRef<string[]>([]);
+  const departmentsRef = useRef<string[]>([]);
+
 
 
   // States for dynamic employee photo capture from camera
@@ -394,12 +399,131 @@ export default function App() {
     let unsubs: (() => void)[] = [];
 
     const initializeFirestoreSync = async () => {
+      setDbStatus("connecting");
+
+      // 2a. Setup real-time snapshot listeners for everything first (non-blocking)
       try {
-        setDbStatus("connecting");
-        // 2a. First, check if Firestore is completely empty and seed if necessary.
+        let loadedCounts = 0;
+        const totalListeners = 5;
+
+        const checkAllLoaded = () => {
+          loadedCounts++;
+          if (loadedCounts >= totalListeners) {
+            setDbStatus("connected");
+            setIsDbLoading(false);
+          }
+        };
+
+        // 1. Logs
+        const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
+          const fetchedLogs: AlcoholTestLog[] = [];
+          snapshot.forEach((doc) => {
+            fetchedLogs.push(doc.data() as AlcoholTestLog);
+          });
+          // Sort logs by timestamp descending
+          fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          logsRef.current = fetchedLogs;
+          setLogs(fetchedLogs);
+          localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
+          checkAllLoaded();
+        }, (err) => {
+          console.error("Error listening to logs:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
+        });
+        unsubs.push(unsubLogs);
+
+        // 2. Employees
+        const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
+          const fetchedEmployees: Employee[] = [];
+          snapshot.forEach((doc) => {
+            fetchedEmployees.push(doc.data() as Employee);
+          });
+          employeesRef.current = fetchedEmployees;
+          setEmployees(fetchedEmployees);
+          localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
+          checkAllLoaded();
+        }, (err) => {
+          console.error("Error listening to employees:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
+        });
+        unsubs.push(unsubEmployees);
+
+        // 3. Supervisors
+        const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
+          const fetchedSupervisors: string[] = [];
+          snapshot.forEach((doc) => {
+            fetchedSupervisors.push(doc.data().name as string);
+          });
+          supervisorsRef.current = fetchedSupervisors;
+          setSupervisors(fetchedSupervisors);
+          localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
+          checkAllLoaded();
+        }, (err) => {
+          console.error("Error listening to supervisors:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
+        });
+        unsubs.push(unsubSupervisors);
+
+        // 4. Departments
+        const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
+          const fetchedDepartments: string[] = [];
+          snapshot.forEach((doc) => {
+            fetchedDepartments.push(doc.data().name as string);
+          });
+          departmentsRef.current = fetchedDepartments;
+          setDepartments(fetchedDepartments);
+          localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
+          checkAllLoaded();
+        }, (err) => {
+          console.error("Error listening to departments:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
+        });
+        unsubs.push(unsubDepartments);
+
+        // 5. Settings
+        const unsubSettings = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
+          if (docSnap.exists()) {
+            const parsed = docSnap.data() as AppSettings;
+            setSettings(parsed);
+            setWitness(parsed.testerName);
+            localStorage.setItem("alcohol_settings", JSON.stringify(parsed));
+          } else {
+            // Default settings doc
+            const defaultSettings = {
+              defaultPassLimit: 50,
+              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+              requireSignature: true,
+              requirePhoto: true,
+              retestGracePeriodMinutes: 15,
+              adminPasscode: "1234",
+              autoBackupToDrive: false
+            };
+            setDoc(doc(db, "settings", "global"), defaultSettings);
+          }
+          checkAllLoaded();
+        }, (err) => {
+          console.error("Error listening to settings:", err);
+          setDbStatus("error");
+          setIsDbLoading(false);
+        });
+        unsubs.push(unsubSettings);
+
+      } catch (err) {
+        console.error("Failed to establish real-time Firestore synchronization:", err);
+        setDbStatus("error");
+        setIsDbLoading(false);
+      }
+
+      // 2b. Check if Firestore is completely empty and seed if necessary in the background
+      try {
         const empSnap = await getDocs(collection(db, "employees"));
         if (empSnap.empty) {
-          console.log("Firestore is empty. Seeding database with initial/local data...");
+          console.log("Firestore is empty. Seeding database with initial/local data in background...");
           
           // Seed employees
           const localEmployeesStr = localStorage.getItem("alcohol_employees");
@@ -446,122 +570,7 @@ export default function App() {
           console.log("Firestore seeding complete!");
         }
       } catch (e) {
-        console.error("Error checking or seeding Firestore:", e);
-        setDbStatus("error");
-      }
-
-      // 2b. Setup real-time snapshot listeners for everything
-      try {
-        let loadedCounts = 0;
-        const totalListeners = 5;
-
-        const checkAllLoaded = () => {
-          loadedCounts++;
-          if (loadedCounts >= totalListeners) {
-            setDbStatus("connected");
-            setIsDbLoading(false);
-          }
-        };
-
-        // 1. Logs
-        const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
-          const fetchedLogs: AlcoholTestLog[] = [];
-          snapshot.forEach((doc) => {
-            fetchedLogs.push(doc.data() as AlcoholTestLog);
-          });
-          // Sort logs by timestamp descending
-          fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-          setLogs(fetchedLogs);
-          localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to logs:", err);
-          setDbStatus("error");
-          setIsDbLoading(false);
-        });
-        unsubs.push(unsubLogs);
-
-        // 2. Employees
-        const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
-          const fetchedEmployees: Employee[] = [];
-          snapshot.forEach((doc) => {
-            fetchedEmployees.push(doc.data() as Employee);
-          });
-          setEmployees(fetchedEmployees);
-          localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to employees:", err);
-          setDbStatus("error");
-          setIsDbLoading(false);
-        });
-        unsubs.push(unsubEmployees);
-
-        // 3. Supervisors
-        const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
-          const fetchedSupervisors: string[] = [];
-          snapshot.forEach((doc) => {
-            fetchedSupervisors.push(doc.data().name as string);
-          });
-          setSupervisors(fetchedSupervisors);
-          localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to supervisors:", err);
-          setDbStatus("error");
-          setIsDbLoading(false);
-        });
-        unsubs.push(unsubSupervisors);
-
-        // 4. Departments
-        const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
-          const fetchedDepartments: string[] = [];
-          snapshot.forEach((doc) => {
-            fetchedDepartments.push(doc.data().name as string);
-          });
-          setDepartments(fetchedDepartments);
-          localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to departments:", err);
-          setDbStatus("error");
-          setIsDbLoading(false);
-        });
-        unsubs.push(unsubDepartments);
-
-        // 5. Settings
-        const unsubSettings = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
-          if (docSnap.exists()) {
-            const parsed = docSnap.data() as AppSettings;
-            setSettings(parsed);
-            setWitness(parsed.testerName);
-            localStorage.setItem("alcohol_settings", JSON.stringify(parsed));
-          } else {
-            // Default settings doc
-            const defaultSettings = {
-              defaultPassLimit: 50,
-              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
-              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
-              requireSignature: true,
-              requirePhoto: true,
-              retestGracePeriodMinutes: 15,
-              adminPasscode: "1234",
-              autoBackupToDrive: false
-            };
-            setDoc(doc(db, "settings", "global"), defaultSettings);
-          }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to settings:", err);
-          setDbStatus("error");
-          setIsDbLoading(false);
-        });
-        unsubs.push(unsubSettings);
-
-      } catch (err) {
-        console.error("Failed to establish real-time Firestore synchronization:", err);
-        setDbStatus("error");
-        setIsDbLoading(false);
+        console.error("Error checking or seeding Firestore in background:", e);
       }
     };
 
@@ -599,10 +608,11 @@ export default function App() {
     triggerAutoBackup(updatedLogs, undefined, undefined, undefined);
 
     try {
+      const currentLogsInDb = logsRef.current;
       const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
-      const oldLogsMap = new Map(logs.map(l => [l.id, l]));
+      const oldLogsMap = new Map(currentLogsInDb.map(l => [l.id, l]));
 
-      const deletePromises = logs
+      const deletePromises = currentLogsInDb
         .filter(l => !newLogsMap.has(l.id))
         .map(l => deleteDoc(doc(db, "alcohol_logs", l.id)));
 
@@ -625,10 +635,11 @@ export default function App() {
     triggerAutoBackup(undefined, updatedEmployees, undefined, undefined);
 
     try {
+      const currentEmployeesInDb = employeesRef.current;
       const newEmpMap = new Map(updatedEmployees.map(e => [e.id, e]));
-      const oldEmpMap = new Map(employees.map(e => [e.id, e]));
+      const oldEmpMap = new Map(currentEmployeesInDb.map(e => [e.id, e]));
 
-      const deletePromises = employees
+      const deletePromises = currentEmployeesInDb
         .filter(e => !newEmpMap.has(e.id))
         .map(e => deleteDoc(doc(db, "employees", e.id)));
 
@@ -651,10 +662,11 @@ export default function App() {
     triggerAutoBackup(undefined, undefined, updatedSupervisors, undefined);
 
     try {
-      const oldSet = new Set(supervisors);
+      const currentSupervisorsInDb = supervisorsRef.current;
+      const oldSet = new Set(currentSupervisorsInDb);
       const newSet = new Set(updatedSupervisors);
 
-      const deletePromises = supervisors
+      const deletePromises = currentSupervisorsInDb
         .filter(name => !newSet.has(name))
         .map(name => deleteDoc(doc(db, "supervisors", name)));
 
@@ -674,10 +686,11 @@ export default function App() {
     triggerAutoBackup(undefined, undefined, undefined, updatedDepartments);
 
     try {
-      const oldSet = new Set(departments);
+      const currentDepartmentsInDb = departmentsRef.current;
+      const oldSet = new Set(currentDepartmentsInDb);
       const newSet = new Set(updatedDepartments);
 
-      const deletePromises = departments
+      const deletePromises = currentDepartmentsInDb
         .filter(name => !newSet.has(name))
         .map(name => deleteDoc(doc(db, "departments", name)));
 
