@@ -349,6 +349,7 @@ export default function App() {
   const [isDriveLoading, setIsDriveLoading] = useState<boolean>(false);
   const [isDbLoading, setIsDbLoading] = useState<boolean>(true);
   const [dbStatus, setDbStatus] = useState<"connecting" | "connected" | "error" | "offline">("connecting");
+  const [dbRetryCount, setDbRetryCount] = useState<number>(0);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
   const logsRef = useRef<AlcoholTestLog[]>([]);
@@ -443,6 +444,7 @@ export default function App() {
 
     const initializeFirestoreSync = async () => {
       setDbStatus("connecting");
+      setIsDbLoading(true);
 
       // Fallback timeout of 12 seconds to load from local storage if firestore is slow or offline
       timeoutId = setTimeout(() => {
@@ -541,14 +543,39 @@ export default function App() {
             }
           } else {
             const fetchedLogs: AlcoholTestLog[] = [];
-            snapshot.forEach((doc) => {
-              fetchedLogs.push(doc.data() as AlcoholTestLog);
+            snapshot.forEach((docSnap) => {
+              fetchedLogs.push(docSnap.data() as AlcoholTestLog);
             });
-            // Sort logs by timestamp descending
-            fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            logsRef.current = fetchedLogs;
-            setLogs(fetchedLogs);
-            localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
+            
+            if (isInitial) {
+              const localLogsStr = localStorage.getItem("alcohol_logs");
+              const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
+              const cloudLogsMap = new Map(fetchedLogs.map(l => [l.id, l]));
+              
+              let mergedLogs = [...fetchedLogs];
+              let hasNewLocal = false;
+              
+              localLogs.forEach(localLog => {
+                if (localLog && localLog.id && !cloudLogsMap.has(localLog.id)) {
+                  console.log("Found unsynced offline log. Uploading to cloud:", localLog.id);
+                  setDoc(doc(db, "alcohol_logs", localLog.id), JSON.parse(JSON.stringify(localLog))).catch(err => {
+                    console.error("Error uploading offline log:", err);
+                  });
+                  mergedLogs.push(localLog);
+                  hasNewLocal = true;
+                }
+              });
+              
+              mergedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+              logsRef.current = mergedLogs;
+              setLogs(mergedLogs);
+              localStorage.setItem("alcohol_logs", JSON.stringify(mergedLogs));
+            } else {
+              fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+              logsRef.current = fetchedLogs;
+              setLogs(fetchedLogs);
+              localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
+            }
           }
           checkAllLoaded();
         }, (err) => {
@@ -589,12 +616,37 @@ export default function App() {
             }
           } else {
             const fetchedEmployees: Employee[] = [];
-            snapshot.forEach((doc) => {
-              fetchedEmployees.push(doc.data() as Employee);
+            snapshot.forEach((docSnap) => {
+              fetchedEmployees.push(docSnap.data() as Employee);
             });
-            employeesRef.current = fetchedEmployees;
-            setEmployees(fetchedEmployees);
-            localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
+            
+            if (isInitial) {
+              const localEmployeesStr = localStorage.getItem("alcohol_employees");
+              const localEmployees: Employee[] = localEmployeesStr ? JSON.parse(localEmployeesStr) : [];
+              const cloudEmployeesMap = new Map(fetchedEmployees.map(e => [e.id, e]));
+              
+              let mergedEmployees = [...fetchedEmployees];
+              let hasNewLocal = false;
+              
+              localEmployees.forEach(localEmp => {
+                if (localEmp && localEmp.id && !cloudEmployeesMap.has(localEmp.id)) {
+                  console.log("Found unsynced offline employee. Uploading:", localEmp.id);
+                  setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
+                    console.error("Error uploading offline employee:", err);
+                  });
+                  mergedEmployees.push(localEmp);
+                  hasNewLocal = true;
+                }
+              });
+              
+              employeesRef.current = mergedEmployees;
+              setEmployees(mergedEmployees);
+              localStorage.setItem("alcohol_employees", JSON.stringify(mergedEmployees));
+            } else {
+              employeesRef.current = fetchedEmployees;
+              setEmployees(fetchedEmployees);
+              localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
+            }
           }
           checkAllLoaded();
         }, (err) => {
@@ -635,12 +687,38 @@ export default function App() {
             }
           } else {
             const fetchedSupervisors: string[] = [];
-            snapshot.forEach((doc) => {
-              fetchedSupervisors.push(doc.data().name as string);
+            snapshot.forEach((docSnap) => {
+              const name = docSnap.data().name as string;
+              if (name) fetchedSupervisors.push(name);
             });
-            supervisorsRef.current = fetchedSupervisors;
-            setSupervisors(fetchedSupervisors);
-            localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
+            
+            if (isInitial) {
+              const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+              const localSupervisors: string[] = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : [];
+              const cloudSupervisorsSet = new Set(fetchedSupervisors);
+              
+              let mergedSupervisors = [...fetchedSupervisors];
+              let hasNewLocal = false;
+              
+              localSupervisors.forEach(localSup => {
+                if (localSup && !cloudSupervisorsSet.has(localSup)) {
+                  console.log("Found unsynced offline supervisor:", localSup);
+                  setDoc(doc(db, "supervisors", localSup), { name: localSup }).catch(err => {
+                    console.error("Error uploading offline supervisor:", err);
+                  });
+                  mergedSupervisors.push(localSup);
+                  hasNewLocal = true;
+                }
+              });
+              
+              supervisorsRef.current = mergedSupervisors;
+              setSupervisors(mergedSupervisors);
+              localStorage.setItem("alcohol_supervisors", JSON.stringify(mergedSupervisors));
+            } else {
+              supervisorsRef.current = fetchedSupervisors;
+              setSupervisors(fetchedSupervisors);
+              localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
+            }
           }
           checkAllLoaded();
         }, (err) => {
@@ -681,12 +759,38 @@ export default function App() {
             }
           } else {
             const fetchedDepartments: string[] = [];
-            snapshot.forEach((doc) => {
-              fetchedDepartments.push(doc.data().name as string);
+            snapshot.forEach((docSnap) => {
+              const name = docSnap.data().name as string;
+              if (name) fetchedDepartments.push(name);
             });
-            departmentsRef.current = fetchedDepartments;
-            setDepartments(fetchedDepartments);
-            localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
+            
+            if (isInitial) {
+              const localDeptsStr = localStorage.getItem("alcohol_departments");
+              const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
+              const cloudDeptsSet = new Set(fetchedDepartments);
+              
+              let mergedDepts = [...fetchedDepartments];
+              let hasNewLocal = false;
+              
+              localDepts.forEach(localDept => {
+                if (localDept && !cloudDeptsSet.has(localDept)) {
+                  console.log("Found unsynced offline department:", localDept);
+                  setDoc(doc(db, "departments", localDept), { name: localDept }).catch(err => {
+                    console.error("Error uploading offline department:", err);
+                  });
+                  mergedDepts.push(localDept);
+                  hasNewLocal = true;
+                }
+              });
+              
+              departmentsRef.current = mergedDepts;
+              setDepartments(mergedDepts);
+              localStorage.setItem("alcohol_departments", JSON.stringify(mergedDepts));
+            } else {
+              departmentsRef.current = fetchedDepartments;
+              setDepartments(fetchedDepartments);
+              localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
+            }
           }
           checkAllLoaded();
         }, (err) => {
@@ -749,7 +853,7 @@ export default function App() {
       if (timeoutId) clearTimeout(timeoutId);
       unsubs.forEach(unsub => unsub());
     };
-  }, []);
+  }, [dbRetryCount]);
 
   const triggerAutoBackup = async (
     customLogs?: AlcoholTestLog[],
@@ -2154,6 +2258,19 @@ export default function App() {
                  dbStatus === "connecting" ? "กำลังเชื่อมคลาวด์..." :
                  "เชื่อมต่อคลาวด์ผิดพลาด (Offline)"}
               </span>
+              {dbStatus !== "connected" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDbRetryCount(prev => prev + 1);
+                    showNotification("กำลังเริ่มเชื่อมต่อฐานข้อมูลใหม่อีกครั้ง...", "info", "เชื่อมต่อคลาวด์");
+                  }}
+                  className="text-[10px] text-emerald-600 hover:text-emerald-800 font-semibold transition hover:underline cursor-pointer"
+                  title="ลองกดเชื่อมต่อฐานข้อมูลใหม่อีกครั้ง"
+                >
+                  (ลองเชื่อมต่อใหม่)
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
