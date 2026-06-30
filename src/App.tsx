@@ -431,6 +431,13 @@ export default function App() {
   // 2. Load / Save from Cloud Firestore & Local Cache
   useEffect(() => {
     let unsubs: (() => void)[] = [];
+    const initialLoadMap = {
+      logs: true,
+      employees: true,
+      supervisors: true,
+      departments: true,
+      settings: true
+    };
 
     const initializeFirestoreSync = async () => {
       setDbStatus("connecting");
@@ -450,19 +457,29 @@ export default function App() {
 
         // 1. Logs
         const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
+          const isInitial = initialLoadMap.logs;
+          initialLoadMap.logs = false;
+
           if (snapshot.empty) {
-            const localLogsStr = localStorage.getItem("alcohol_logs");
-            const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
-            if (localLogs && localLogs.length > 0) {
-              console.log("Firestore logs collection is empty. Seeding local logs...");
-              localLogs.forEach((log: any) => {
-                setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
-                  console.error("Error seeding log document:", err);
+            if (isInitial) {
+              const localLogsStr = localStorage.getItem("alcohol_logs");
+              const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
+              if (localLogs && localLogs.length > 0) {
+                console.log("Firestore logs collection is empty. Seeding local logs...");
+                localLogs.forEach((log: any) => {
+                  setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
+                    console.error("Error seeding log document:", err);
+                  });
                 });
-              });
-              logsRef.current = localLogs;
-              setLogs(localLogs);
+                logsRef.current = localLogs;
+                setLogs(localLogs);
+              } else {
+                logsRef.current = [];
+                setLogs([]);
+                localStorage.setItem("alcohol_logs", "[]");
+              }
             } else {
+              // User manually deleted the last log document
               logsRef.current = [];
               setLogs([]);
               localStorage.setItem("alcohol_logs", "[]");
@@ -488,19 +505,29 @@ export default function App() {
 
         // 2. Employees
         const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
+          const isInitial = initialLoadMap.employees;
+          initialLoadMap.employees = false;
+
           if (snapshot.empty) {
-            const localEmployeesStr = localStorage.getItem("alcohol_employees");
-            const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
-            if (localEmployees && localEmployees.length > 0) {
-              console.log("Firestore employees collection is empty. Seeding local employees...");
-              localEmployees.forEach((emp: any) => {
-                setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
-                  console.error("Error seeding employee document:", err);
+            if (isInitial) {
+              const localEmployeesStr = localStorage.getItem("alcohol_employees");
+              const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
+              if (localEmployees && localEmployees.length > 0) {
+                console.log("Firestore employees collection is empty. Seeding local employees...");
+                localEmployees.forEach((emp: any) => {
+                  setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
+                    console.error("Error seeding employee document:", err);
+                  });
                 });
-              });
-              employeesRef.current = localEmployees;
-              setEmployees(localEmployees);
+                employeesRef.current = localEmployees;
+                setEmployees(localEmployees);
+              } else {
+                employeesRef.current = [];
+                setEmployees([]);
+                localStorage.setItem("alcohol_employees", "[]");
+              }
             } else {
+              // User manually deleted the last employee document
               employeesRef.current = [];
               setEmployees([]);
               localStorage.setItem("alcohol_employees", "[]");
@@ -524,19 +551,29 @@ export default function App() {
 
         // 3. Supervisors
         const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
+          const isInitial = initialLoadMap.supervisors;
+          initialLoadMap.supervisors = false;
+
           if (snapshot.empty) {
-            const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
-            const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
-            if (localSupervisors && localSupervisors.length > 0) {
-              console.log("Firestore supervisors collection is empty. Seeding local supervisors...");
-              localSupervisors.forEach((s: string) => {
-                setDoc(doc(db, "supervisors", s), { name: s }).catch(err => {
-                  console.error("Error seeding supervisor document:", err);
+            if (isInitial) {
+              const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+              const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
+              if (localSupervisors && localSupervisors.length > 0) {
+                console.log("Firestore supervisors collection is empty. Seeding local supervisors...");
+                localSupervisors.forEach((s: string) => {
+                  setDoc(doc(db, "supervisors", s), { name: s }).catch(err => {
+                    console.error("Error seeding supervisor document:", err);
+                  });
                 });
-              });
-              supervisorsRef.current = localSupervisors;
-              setSupervisors(localSupervisors);
+                supervisorsRef.current = localSupervisors;
+                setSupervisors(localSupervisors);
+              } else {
+                supervisorsRef.current = [];
+                setSupervisors([]);
+                localStorage.setItem("alcohol_supervisors", "[]");
+              }
             } else {
+              // User manually deleted the last supervisor
               supervisorsRef.current = [];
               setSupervisors([]);
               localStorage.setItem("alcohol_supervisors", "[]");
@@ -560,19 +597,29 @@ export default function App() {
 
         // 4. Departments
         const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
+          const isInitial = initialLoadMap.departments;
+          initialLoadMap.departments = false;
+
           if (snapshot.empty) {
-            const localDeptsStr = localStorage.getItem("alcohol_departments");
-            const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
-            if (localDepts && localDepts.length > 0) {
-              console.log("Firestore departments collection is empty. Seeding local departments...");
-              localDepts.forEach((d: string) => {
-                setDoc(doc(db, "departments", d), { name: d }).catch(err => {
-                  console.error("Error seeding department document:", err);
+            if (isInitial) {
+              const localDeptsStr = localStorage.getItem("alcohol_departments");
+              const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
+              if (localDepts && localDepts.length > 0) {
+                console.log("Firestore departments collection is empty. Seeding local departments...");
+                localDepts.forEach((d: string) => {
+                  setDoc(doc(db, "departments", d), { name: d }).catch(err => {
+                    console.error("Error seeding department document:", err);
+                  });
                 });
-              });
-              departmentsRef.current = localDepts;
-              setDepartments(localDepts);
+                departmentsRef.current = localDepts;
+                setDepartments(localDepts);
+              } else {
+                departmentsRef.current = [];
+                setDepartments([]);
+                localStorage.setItem("alcohol_departments", "[]");
+              }
             } else {
+              // User manually deleted the last department
               departmentsRef.current = [];
               setDepartments([]);
               localStorage.setItem("alcohol_departments", "[]");
@@ -596,30 +643,35 @@ export default function App() {
 
         // 5. Settings
         const unsubSettings = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
+          const isInitial = initialLoadMap.settings;
+          initialLoadMap.settings = false;
+
           if (docSnap.exists()) {
             const parsed = docSnap.data() as AppSettings;
             setSettings(parsed);
             setWitness(parsed.testerName);
             localStorage.setItem("alcohol_settings", JSON.stringify(parsed));
           } else {
-            console.log("Firestore settings doc is empty. Seeding from local settings...");
-            const localSettingsStr = localStorage.getItem("alcohol_settings");
-            const defaultSettings = localSettingsStr ? JSON.parse(localSettingsStr) : {
-              defaultPassLimit: 50,
-              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
-              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
-              requireSignature: true,
-              requirePhoto: true,
-              retestGracePeriodMinutes: 15,
-              adminPasscode: "1234",
-              autoBackupToDrive: false
-            };
-            setDoc(doc(db, "settings", "global"), defaultSettings).catch(err => {
-              console.error("Error seeding global settings doc:", err);
-            });
-            setSettings(defaultSettings);
-            setWitness(defaultSettings.testerName);
-            localStorage.setItem("alcohol_settings", JSON.stringify(defaultSettings));
+            if (isInitial) {
+              console.log("Firestore settings doc is empty. Seeding from local settings...");
+              const localSettingsStr = localStorage.getItem("alcohol_settings");
+              const defaultSettings = localSettingsStr ? JSON.parse(localSettingsStr) : {
+                defaultPassLimit: 50,
+                companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+                testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+                requireSignature: true,
+                requirePhoto: true,
+                retestGracePeriodMinutes: 15,
+                adminPasscode: "1234",
+                autoBackupToDrive: false
+              };
+              setDoc(doc(db, "settings", "global"), defaultSettings).catch(err => {
+                console.error("Error seeding global settings doc:", err);
+              });
+              setSettings(defaultSettings);
+              setWitness(defaultSettings.testerName);
+              localStorage.setItem("alcohol_settings", JSON.stringify(defaultSettings));
+            }
           }
           checkAllLoaded();
         }, (err) => {
