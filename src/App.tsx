@@ -2032,6 +2032,197 @@ export default function App() {
     showNotification("ส่งออกรายงาน Excel พร้อมรูปภาพหลักฐานเรียบร้อยแล้ว", "success", "ส่งออกสำเร็จ");
   };
 
+  // 9.2 Print Report via high-compatibility New Window Popup (supports Base64 images & bypasses iframe restrictions)
+  const handlePrintReportWindow = () => {
+    const targetPrintLogs = dbFilteredLogs;
+
+    if (targetPrintLogs.length === 0) {
+      showNotification("ไม่พบบันทึกข้อมูลตามวันที่เลือกเพื่อพิมพ์รายงาน", "warning", "ไม่มีข้อมูลประวัติ");
+      return;
+    }
+
+    const dateRangeStr = calendarMode === "SINGLE" 
+      ? `ประจำวันที่ ${selectedCalendarDate.getDate()} ${THAI_MONTHS[selectedCalendarDate.getMonth()]} พ.ศ. ${selectedCalendarDate.getFullYear() + 543}`
+      : calendarMode === "RANGE"
+      ? `ระหว่างวันที่ ${selectedCalendarDate.getDate()} ${THAI_MONTHS[selectedCalendarDate.getMonth()]} พ.ศ. ${selectedCalendarDate.getFullYear() + 543} ถึงวันที่ ${(selectedCalendarEndDate || selectedCalendarDate).getDate()} ${THAI_MONTHS[(selectedCalendarEndDate || selectedCalendarDate).getMonth()]} พ.ศ. ${(selectedCalendarEndDate || selectedCalendarDate).getFullYear() + 543}`
+      : "บันทึกประวัติทั้งหมด";
+
+    const reportRows = targetPrintLogs.map((log, index) => {
+      const dateStr = new Date(log.timestamp).toLocaleString("th-TH").replace(/,/g, "");
+      const statusStr = log.isLeave ? "ลา/ไม่ได้ตรวจ" : (log.isPassed ? "ผ่านเกณฑ์" : "ไม่ผ่านเกณฑ์");
+      const statusStyle = log.isLeave 
+        ? "color: #b45309; background-color: #fffbeb;" 
+        : (log.isPassed ? "color: #047857; background-color: #ecfdf5;" : "color: #b91c1c; background-color: #fef2f2;");
+      const attemptInfo = getLogAttemptInfo(log.id);
+      const attemptStr = log.isLeave ? "" : `(ครั้งที่ ${attemptInfo.attempt})`;
+      const symptomsStr = log.isLeave ? "ไม่ได้ตรวจคัดกรองเนื่องจากลางาน" : log.symptoms.join("; ");
+      const notesText = log.notes ? `<div style="font-size: 10px; color: #475569; margin-top: 3px; font-style: italic;">[หมายเหตุ: ${log.notes}]</div>` : "";
+      
+      const photoHtml = log.photo 
+        ? `<img src="${log.photo}" style="width: 70px; height: 52px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1;" />`
+        : `<span style="font-size: 10px; color: #94a3b8;">ไม่มีรูปภาพ</span>`;
+
+      const signatureHtml = log.signature 
+        ? `<img src="${log.signature}" style="max-width: 70px; max-height: 40px; object-fit: contain;" />`
+        : `<span style="font-size: 10px; color: #94a3b8;">ไม่ได้เซ็น</span>`;
+
+      return `
+        <tr>
+          <td style="text-align: center;">${index + 1}</td>
+          <td style="text-align: center; font-family: monospace; font-size: 10px;">${dateStr}</td>
+          <td style="font-weight: bold; font-size: 12px;">
+            <div>${log.employeeName}</div>
+            <div style="font-size: 10px; color: #64748b; font-weight: normal; margin-top: 2px;">${attemptStr}</div>
+          </td>
+          <td style="font-size: 11px;">
+            <div style="font-family: monospace; font-weight: bold;">${log.employeeId || "ทั่วไป"}</div>
+            <div style="font-size: 10px; color: #64748b; margin-top: 2px;">${log.department || ""}</div>
+          </td>
+          <td style="text-align: center; font-family: monospace; font-weight: bold; font-size: 12px;">${log.isLeave ? "-" : `${log.alcoholLevel} mg%`}</td>
+          <td style="text-align: center; font-weight: bold; font-size: 11px; ${statusStyle}">${statusStr}</td>
+          <td style="font-size: 11px;">
+            <div>${symptomsStr}</div>
+            ${notesText}
+          </td>
+          <td style="text-align: center; vertical-align: middle;">${photoHtml}</td>
+          <td style="text-align: center; vertical-align: middle;">${signatureHtml}</td>
+        </tr>
+      `;
+    }).join("");
+
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      showNotification("บราวเซอร์ของคุณบล็อกป๊อปอัป กรุณาคลิกปุ่ม 'อนุญาตป๊อปอัป' ของบราวเซอร์เพื่อดาวน์โหลดและพิมพ์ PDF", "warning", "บล็อกป๊อปอัป");
+      return;
+    }
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>รายงานผลคัดกรองการวัดปริมาณแอลกอฮอล์รายวัน</title>
+          <meta charset="utf-8">
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap');
+            body {
+              font-family: 'Sarabun', sans-serif;
+              color: #1e293b;
+              margin: 25px;
+              padding: 0;
+            }
+            .header {
+              text-align: center;
+              padding-bottom: 15px;
+              border-bottom: 2px solid #e2e8f0;
+              margin-bottom: 20px;
+            }
+            .header h1 {
+              font-size: 20px;
+              margin: 0 0 6px 0;
+              color: #0f172a;
+              font-weight: 700;
+            }
+            .header p {
+              font-size: 13px;
+              margin: 3px 0;
+              color: #475569;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-bottom: 25px;
+              font-size: 11px;
+            }
+            th {
+              background-color: #f8fafc;
+              color: #334155;
+              font-weight: 700;
+              border: 1px solid #cbd5e1;
+              padding: 8px 6px;
+              text-align: left;
+            }
+            th.center {
+              text-align: center;
+            }
+            td {
+              border: 1px solid #cbd5e1;
+              padding: 6px;
+              vertical-align: middle;
+            }
+            .footer-sig {
+              margin-top: 40px;
+              display: flex;
+              justify-content: space-between;
+              padding: 0 40px;
+              page-break-inside: avoid;
+            }
+            .sig-box {
+              text-align: center;
+              width: 260px;
+            }
+            .sig-line {
+              border-bottom: 1px solid #94a3b8;
+              height: 40px;
+              margin-bottom: 8px;
+            }
+            @media print {
+              body { margin: 15mm 10mm; }
+              .no-print { display: none; }
+              tr { page-break-inside: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>รายงานผลคัดกรองการวัดปริมาณแอลกอฮอล์รายวัน</h1>
+            <p>${dateRangeStr}</p>
+            <p style="font-size: 10px; color: #64748b;">ออกเอกสารเมื่อ ${new Date().toLocaleString("th-TH")}</p>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th class="center" style="width: 5%;">ลำดับ</th>
+                <th class="center" style="width: 15%;">วันและเวลา</th>
+                <th style="width: 22%;">ชื่อ-นามสกุลพนักงาน</th>
+                <th style="width: 13%;">รหัส/สังกัด</th>
+                <th class="center" style="width: 10%;">แอลกอฮอล์</th>
+                <th class="center" style="width: 10%;">ผลตรวจ</th>
+                <th style="width: 15%;">อาการ / หมายเหตุ</th>
+                <th class="center" style="width: 10%;">รูปหลักฐาน</th>
+                <th class="center" style="width: 10%;">ลายเซ็น</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${reportRows}
+            </tbody>
+          </table>
+
+          <div class="footer-sig">
+            <div class="sig-box">
+              <div class="sig-line"></div>
+              <p style="font-size: 11px; font-weight: bold; margin: 0;">ลงชื่อผู้บันทึก/ผู้รับผิดชอบการคัดกรอง</p>
+              <p style="font-size: 10px; color: #64748b; margin: 3px 0 0 0;">( ${witness.trim() || settings.testerName || "ผู้ตรวจการคัดกรอง"} )</p>
+            </div>
+            <div class="sig-box">
+              <div class="sig-line"></div>
+              <p style="font-size: 11px; font-weight: bold; margin: 0;">ลงชื่อผู้ตรวจสอบ/พนักงานเจ้าหน้าที่หลัก</p>
+              <p style="font-size: 10px; color: #64748b; margin: 3px 0 0 0;">( ............................................................ )</p>
+            </div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              setTimeout(function() {
+                window.print();
+              }, 400);
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  };
+
   // 10. Dashboard Stats Calculations
   // Helper to check if a log timestamp falls inside the selected calendar date/range filter
   const checkLogMatchesCalendar = (timestamp: string) => {
@@ -5950,10 +6141,19 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => window.print()}
+                    onClick={handlePrintReportWindow}
                     className="flex items-center gap-1.5 justify-center bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-sans font-bold px-4 py-2 rounded-xl transition cursor-pointer shadow-sm hover:shadow"
+                    title="เปิดหน้าต่างใหม่เพื่อพิมพ์รายงานอย่างสมบูรณ์แบบ (แนะนำ)"
                   >
-                    <Printer size={14} /> พิมพ์รายงาน / บันทึก PDF
+                    <Printer size={14} /> สั่งพิมพ์รายงาน / บันทึก PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="flex items-center gap-1.5 justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-sans font-bold px-3 py-2 rounded-xl transition cursor-pointer print:hidden"
+                    title="พิมพ์ด้วยฟังก์ชันเครื่องพิมพ์ของระบบบราวเซอร์โดยตรง"
+                  >
+                    เครื่องมือพิมพ์ด่วน
                   </button>
                   <button
                     type="button"
@@ -5967,7 +6167,7 @@ export default function App() {
 
               {/* Scrollable Printable Container */}
               <div className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible bg-slate-100 print:bg-white">
-                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm max-w-4xl mx-auto print:border-none print:shadow-none print:p-0 print:rounded-none">
+                <div id="print-area" className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm max-w-4xl mx-auto print:border-none print:shadow-none print:p-0 print:rounded-none">
                   {/* Business Header */}
                   <div className="text-center pb-6 border-b border-slate-200">
                     <h2 className="text-xl font-bold text-slate-900 font-sans tracking-tight">

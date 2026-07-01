@@ -28,3 +28,39 @@ body {
   background: #94a3b8;
 }
 
+/* Print CSS formatting rules */
+@media print {
+  /* Hide all other elements on the dashboard when printing from app context */
+  body * {
+    visibility: hidden;
+  }
+  
+  /* Show only the print-area element */
+  #print-area, #print-area * {
+    visibility: visible;
+  }
+  
+  /* Force print area to take up entire paper canvas and remove page absolute offsets */
+  #print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100% !important;
+    max-width: 100% !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Prevent row splitting or image breaking on multiple pages */
+  tr, img {
+    page-break-inside: avoid !important;
+  }
+
+  @page {
+    size: auto;
+    margin: 15mm 10mm;
+  }
+}
+
