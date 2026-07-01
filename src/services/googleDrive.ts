@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from "firebase/auth";
-import { initializeFirestore } from "firebase/firestore";
+import { initializeFirestore, enableMultiTabIndexedDbPersistence } from "firebase/firestore";
 
 const firebaseConfig = {
   projectId: "gen-lang-client-0500124353",
@@ -17,6 +17,11 @@ export const auth = getAuth(app);
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true,
 }, "ai-studio-dailyalcoholtest-580a2749-d0ed-4423-aa90-10ee0a7565fb");
+
+// Enable offline persistence for robust syncing
+enableMultiTabIndexedDbPersistence(db).catch((err) => {
+  console.warn("Firestore offline persistence could not be enabled:", err.message);
+});
 
 const provider = new GoogleAuthProvider();
 // Google Drive scopes as requested and approved

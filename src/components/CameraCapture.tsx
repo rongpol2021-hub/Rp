@@ -89,15 +89,17 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
       const ctx = canvas.getContext("2d");
 
       if (ctx) {
-        // Match canvas dimensions with video stream aspect ratio
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
+        // Downscale to a compact resolution (200x150)
+        // This keeps the image sharp enough for evidence, saves Firestore storage,
+        // and stays under Excel's cell character limit of 32,767 characters!
+        canvas.width = 200;
+        canvas.height = 150;
 
-        // Draw video frame to canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        // Draw video frame resized to canvas
+        ctx.drawImage(video, 0, 0, 200, 150);
 
-        // Convert canvas image to Base64
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        // Convert to Base64 with high compression quality (0.5)
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
         setCapturedImage(dataUrl);
         onCapture(dataUrl);
         stopCamera();
@@ -110,9 +112,23 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        const resultString = reader.result as string;
-        setCapturedImage(resultString);
-        onCapture(resultString);
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            // Downscale to a compact resolution (200x150)
+            canvas.width = 200;
+            canvas.height = 150;
+            ctx.drawImage(img, 0, 0, 200, 150);
+            
+            // Convert to Base64 with high compression quality (0.5)
+            const compressedBase64 = canvas.toDataURL("image/jpeg", 0.5);
+            setCapturedImage(compressedBase64);
+            onCapture(compressedBase64);
+          }
+        };
+        img.src = reader.result as string;
       };
       reader.readAsDataURL(file);
     }

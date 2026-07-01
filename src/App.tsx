@@ -23,6 +23,7 @@ import {
   RefreshCw, 
   ChevronRight, 
   ChevronLeft,
+  Printer,
   Download,
   Award,
   AlertCircle,
@@ -180,6 +181,7 @@ export default function App() {
 
   // UI States
   const [selectedLog, setSelectedLog] = useState<AlcoholTestLog | null>(null);
+  const [showPrintReport, setShowPrintReport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PASS" | "FAIL" | "LEAVE">("ALL");
@@ -350,7 +352,10 @@ export default function App() {
   const [isDbLoading, setIsDbLoading] = useState<boolean>(true);
   const [dbStatus, setDbStatus] = useState<"connecting" | "connected" | "error" | "offline">("connecting");
   const [dbRetryCount, setDbRetryCount] = useState<number>(0);
+  const [dbErrorMessage, setDbErrorMessage] = useState<string | null>(null);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
+
+  const hasNotifiedOffline = useRef(false);
 
   const logsRef = useRef<AlcoholTestLog[]>([]);
   const employeesRef = useRef<Employee[]>([]);
@@ -442,8 +447,51 @@ export default function App() {
       settings: true
     };
 
+    const loadLocalStorageFallback = () => {
+      const localLogsStr = localStorage.getItem("alcohol_logs");
+      const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
+      logsRef.current = localLogs;
+      setLogs(localLogs);
+
+      const localEmployeesStr = localStorage.getItem("alcohol_employees");
+      const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
+      employeesRef.current = localEmployees;
+      setEmployees(localEmployees);
+
+      const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+      const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
+      supervisorsRef.current = localSupervisors;
+      setSupervisors(localSupervisors);
+
+      const localDeptsStr = localStorage.getItem("alcohol_departments");
+      const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
+      departmentsRef.current = localDepts;
+      setDepartments(localDepts);
+
+      const localSettingsStr = localStorage.getItem("alcohol_settings");
+      if (localSettingsStr) {
+        const parsed = JSON.parse(localSettingsStr);
+        setSettings(parsed);
+        setWitness(parsed.testerName);
+      } else {
+        const defaultSettings = {
+          defaultPassLimit: 50,
+          companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+          testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+          requireSignature: true,
+          requirePhoto: true,
+          retestGracePeriodMinutes: 15,
+          adminPasscode: "1234",
+          autoBackupToDrive: false
+        };
+        setSettings(defaultSettings);
+        setWitness(defaultSettings.testerName);
+      }
+    };
+
     const initializeFirestoreSync = async () => {
       setDbStatus("connecting");
+      setDbErrorMessage(null);
       setIsDbLoading(true);
 
       // Fallback timeout of 12 seconds to load from local storage if firestore is slow or offline
@@ -451,48 +499,12 @@ export default function App() {
         if (!isLoaded) {
           console.warn("Firestore sync timed out. Falling back to local storage...");
           setDbStatus("offline");
-          
-          // Load from localStorage as fallback
-          const localLogsStr = localStorage.getItem("alcohol_logs");
-          const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
-          logsRef.current = localLogs;
-          setLogs(localLogs);
-
-          const localEmployeesStr = localStorage.getItem("alcohol_employees");
-          const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
-          employeesRef.current = localEmployees;
-          setEmployees(localEmployees);
-
-          const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
-          const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
-          supervisorsRef.current = localSupervisors;
-          setSupervisors(localSupervisors);
-
-          const localDeptsStr = localStorage.getItem("alcohol_departments");
-          const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
-          departmentsRef.current = localDepts;
-          setDepartments(localDepts);
-
-          const localSettingsStr = localStorage.getItem("alcohol_settings");
-          if (localSettingsStr) {
-            const parsed = JSON.parse(localSettingsStr);
-            setSettings(parsed);
-            setWitness(parsed.testerName);
-          } else {
-            const defaultSettings = {
-              defaultPassLimit: 50,
-              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
-              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
-              requireSignature: true,
-              requirePhoto: true,
-              retestGracePeriodMinutes: 15,
-              adminPasscode: "1234",
-              autoBackupToDrive: false
-            };
-            setSettings(defaultSettings);
-            setWitness(defaultSettings.testerName);
+          if (!hasNotifiedOffline.current) {
+            showNotification("ระบบสลับไปใช้งานโหมดออฟไลน์เพื่อความต่อเนื่อง (สามารถบันทึกข้อมูลและใช้งานได้ปกติ)", "info", "โหมดทำงานแบบออฟไลน์");
+            hasNotifiedOffline.current = true;
           }
-
+          
+          loadLocalStorageFallback();
           setIsDbLoading(false);
         }
       }, 12000);
@@ -581,6 +593,11 @@ export default function App() {
         }, (err) => {
           console.error("Error listening to logs:", err);
           setDbStatus("error");
+          setDbErrorMessage(`เชื่อมโยงประวัติลมเป่าล้มเหลว: ${err.message || String(err)}`);
+          if (!isLoaded) {
+            loadLocalStorageFallback();
+            isLoaded = true;
+          }
           setIsDbLoading(false);
         });
         unsubs.push(unsubLogs);
@@ -652,6 +669,11 @@ export default function App() {
         }, (err) => {
           console.error("Error listening to employees:", err);
           setDbStatus("error");
+          setDbErrorMessage(`เชื่อมโยงรายชื่อพนักงานล้มเหลว: ${err.message || String(err)}`);
+          if (!isLoaded) {
+            loadLocalStorageFallback();
+            isLoaded = true;
+          }
           setIsDbLoading(false);
         });
         unsubs.push(unsubEmployees);
@@ -724,6 +746,11 @@ export default function App() {
         }, (err) => {
           console.error("Error listening to supervisors:", err);
           setDbStatus("error");
+          setDbErrorMessage(`เชื่อมโยงรายชื่อผู้ควบคุมล้มเหลว: ${err.message || String(err)}`);
+          if (!isLoaded) {
+            loadLocalStorageFallback();
+            isLoaded = true;
+          }
           setIsDbLoading(false);
         });
         unsubs.push(unsubSupervisors);
@@ -796,6 +823,11 @@ export default function App() {
         }, (err) => {
           console.error("Error listening to departments:", err);
           setDbStatus("error");
+          setDbErrorMessage(`เชื่อมโยงข้อมูลแผนกล้มเหลว: ${err.message || String(err)}`);
+          if (!isLoaded) {
+            loadLocalStorageFallback();
+            isLoaded = true;
+          }
           setIsDbLoading(false);
         });
         unsubs.push(unsubDepartments);
@@ -836,6 +868,11 @@ export default function App() {
         }, (err) => {
           console.error("Error listening to settings:", err);
           setDbStatus("error");
+          setDbErrorMessage(`เชื่อมโยงข้อมูลตั้งค่าระบบล้มเหลว: ${err.message || String(err)}`);
+          if (!isLoaded) {
+            loadLocalStorageFallback();
+            isLoaded = true;
+          }
           setIsDbLoading(false);
         });
         unsubs.push(unsubSettings);
@@ -843,6 +880,11 @@ export default function App() {
       } catch (err) {
         console.error("Failed to establish real-time Firestore synchronization:", err);
         setDbStatus("error");
+        setDbErrorMessage(err instanceof Error ? err.message : String(err));
+        if (!isLoaded) {
+          loadLocalStorageFallback();
+          isLoaded = true;
+        }
         setIsDbLoading(false);
       }
     };
@@ -854,6 +896,13 @@ export default function App() {
       unsubs.forEach(unsub => unsub());
     };
   }, [dbRetryCount]);
+
+  // Reset notify state upon successful connection
+  useEffect(() => {
+    if (dbStatus === "connected") {
+      hasNotifiedOffline.current = false;
+    }
+  }, [dbStatus]);
 
   const triggerAutoBackup = async (
     customLogs?: AlcoholTestLog[],
@@ -1304,22 +1353,6 @@ export default function App() {
     const updatedLogs = [newLog, ...logs];
     saveLogs(updatedLogs);
 
-    // Save/update the face photo in the employee profile (ลงบันทึกใน Profile พนักงาน)
-    if (!isTestModePersonal) {
-      const empIdToMatch = employeeId.trim();
-      const empNameToMatch = employeeName.trim().toLowerCase();
-      
-      const updatedEmployees = employees.map(emp => {
-        const isMatch = (empIdToMatch && emp.id.trim().toLowerCase() === empIdToMatch.toLowerCase()) ||
-                        (emp.name.trim().toLowerCase() === empNameToMatch);
-        if (isMatch) {
-          return { ...emp, photo: finalPhoto };
-        }
-        return emp;
-      });
-      saveEmployees(updatedEmployees);
-    }
-
     // Reset Form Fields (keep tester name for speed)
     setEmployeeName("");
     setEmployeeId("");
@@ -1373,11 +1406,9 @@ export default function App() {
         "คุณต้องการล้างประวัติการตรวจวัดแอลกอฮอล์ทั้งหมดออกจากระบบ (รวมถึงข้อมูลจำลองและข้อมูลทดสอบทั้งหมด) ใช่หรือไม่? รายการทั้งหมดจะหายไปอย่างถาวร!",
         async () => {
           try {
-            const snapshot = await getDocs(collection(db, "alcohol_logs"));
-            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "alcohol_logs", d.id)));
-            await Promise.all(deletePromises);
+            await saveLogs([], true);
             setSelectedLog(null);
-            showNotification("รีเซ็ตล้างประวัติการทดสอบคู่มือและตัวอย่างทั้งหมดเรียบร้อยแล้ว", "info", "ล้างระบบเรียบร้อย");
+            showNotification("รีเซ็ตล้างประวัติการตรวจวัดทั้งหมดและอัปเดตระบบเรียบร้อยแล้ว", "success", "ล้างระบบเรียบร้อย");
           } catch (e) {
             console.error("Error resetting all logs:", e);
             showNotification("เกิดข้อผิดพลาดในการล้างข้อมูล", "error", "ล้างล้มเหลว");
@@ -1549,9 +1580,7 @@ export default function App() {
         `คุณต้องการลบรายชื่อพนักงานทั้งหมดจำนวน ${employees.length} คน ออกจากฐานข้อมูลระบบคัดกรองใช่หรือไม่? (การดำเนินการนี้ไม่สามารถย้อนกลับได้)`,
         async () => {
           try {
-            const snapshot = await getDocs(collection(db, "employees"));
-            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "employees", d.id)));
-            await Promise.all(deletePromises);
+            await saveEmployees([], true);
             showNotification("ลบรายชื่อพนักงานทั้งหมดสำเร็จแล้ว", "success", "ลบข้อมูลสำเร็จ");
           } catch (e) {
             console.error("Error deleting all employees:", e);
@@ -1890,6 +1919,117 @@ export default function App() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // 9.1 Export to EXCEL (HTML table representation with embedded Base64 photos)
+  const handleExportExcel = () => {
+    // Get logs filtered by the selected calendar date
+    const targetExportLogs = dbFilteredLogs;
+
+    if (targetExportLogs.length === 0) {
+      showNotification("ไม่พบบันทึกข้อมูลตามวันที่ที่เลือกในปฏิทินเพื่อส่งออกเอกสาร", "warning", "ไม่มีข้อมูลประวัติ");
+      return;
+    }
+
+    // Build filename with date range details
+    let dateSuffix = "ทั้งหมด";
+    if (calendarMode === "SINGLE") {
+      dateSuffix = `ประจำวันที่_${selectedCalendarDate.getFullYear() + 543}-${(selectedCalendarDate.getMonth() + 1).toString().padStart(2, '0')}-${selectedCalendarDate.getDate().toString().padStart(2, '0')}`;
+    } else if (calendarMode === "RANGE") {
+      const startDateStr = `${selectedCalendarDate.getFullYear() + 543}-${(selectedCalendarDate.getMonth() + 1).toString().padStart(2, '0')}-${selectedCalendarDate.getDate().toString().padStart(2, '0')}`;
+      const endD = selectedCalendarEndDate || selectedCalendarDate;
+      const endDateStr = `${endD.getFullYear() + 543}-${(endD.getMonth() + 1).toString().padStart(2, '0')}-${endD.getDate().toString().padStart(2, '0')}`;
+      dateSuffix = `ระหว่างวันที่_${startDateStr}_ถึง_${endDateStr}`;
+    }
+
+    const htmlRows = targetExportLogs.map(log => {
+      const dateStr = new Date(log.timestamp).toLocaleString("th-TH").replace(/,/g, "");
+      const statusClass = log.isLeave ? "bg-leave" : (log.isPassed ? "bg-pass" : "bg-fail");
+      const statusStr = log.isLeave ? "ลา/ไม่ได้ตรวจ" : (log.isPassed ? "ผ่านเกณฑ์" : "ไม่ผ่านเกณฑ์");
+      const symptomsStr = log.isLeave ? "ลากิจ/ลาป่วย/ไม่ได้ตรวจคัดกรอง" : log.symptoms.join("; ");
+      const attemptInfo = getLogAttemptInfo(log.id);
+      const attemptStr = log.isLeave ? "ไม่ได้เป่าตรวจ" : `ครั้งที่ ${attemptInfo.attempt}${attemptInfo.attempt > 1 ? " (แก้ตัว)" : ""}`;
+      const alcoholLevelVal = log.isLeave ? "ไม่ได้ตรวจ" : log.alcoholLevel;
+      
+      // Image rendering inside Excel cell
+      let imgHtml = "";
+      if (log.photo) {
+        imgHtml = `<img src="${log.photo}" width="60" height="60" style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1;" />`;
+      } else {
+        imgHtml = `<span style="color: #94a3b8; font-size: 10px;">ไม่มีรูปภาพ</span>`;
+      }
+
+      return `
+        <tr>
+          <td>${log.id}</td>
+          <td>${dateStr}</td>
+          <td class="text-left">${log.employeeName}</td>
+          <td>${attemptStr}</td>
+          <td>${log.employeeId || "ทั่วไป"}</td>
+          <td>${log.department || ""}</td>
+          <td style="font-weight: bold; font-family: monospace;">${alcoholLevelVal}</td>
+          <td style="font-family: monospace;">${log.passLimit}</td>
+          <td class="${statusClass}">${statusStr}</td>
+          <td class="text-left">${symptomsStr}</td>
+          <td class="text-left">${log.notes || ""}</td>
+          <td>${log.witness || "ไม่ระบุ"}</td>
+          <td style="width: 70px; height: 70px; text-align: center; vertical-align: middle;">${imgHtml}</td>
+        </tr>
+      `;
+    }).join("");
+
+    const excelHtml = `
+      <html xmlns:o="urn:schemas-microsoft-excel:office:office" xmlns:x="urn:schemas-microsoft-excel:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+      <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <style>
+          body { font-family: 'Tahoma', 'Segoe UI', Arial, sans-serif; }
+          table { border-collapse: collapse; }
+          th { background-color: #4f46e5; color: #ffffff; font-weight: bold; border: 1px solid #cbd5e1; padding: 8px; font-size: 13px; text-align: center; }
+          td { border: 1px solid #cbd5e1; padding: 6px; font-size: 12px; vertical-align: middle; text-align: center; }
+          .text-left { text-align: left; }
+          .bg-pass { background-color: #d1fae5; color: #065f46; }
+          .bg-fail { background-color: #fee2e2; color: #991b1b; }
+          .bg-leave { background-color: #f3f4f6; color: #374151; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <thead>
+            <tr>
+              <th>รหัสการตรวจ</th>
+              <th>วันและเวลา</th>
+              <th>ชื่อ-นามสกุล</th>
+              <th>ครั้งที่เป่า</th>
+              <th>รหัสพนักงาน/สถานะ</th>
+              <th>แผนก/สังกัด</th>
+              <th>ปริมาณแอลกอฮอล์ (mg%)</th>
+              <th>เกณฑ์ควบคุม (mg%)</th>
+              <th>ผลการทดสอบ</th>
+              <th>อาการ</th>
+              <th>หมายเหตุ</th>
+              <th>ผู้บันทึกผล</th>
+              <th style="width: 70px;">รูปถ่ายหลักฐาน</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${htmlRows}
+          </tbody>
+        </table>
+      </body>
+      </html>
+    `;
+
+    const blob = new Blob([excelHtml], { type: "application/vnd.ms-excel;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `รายงานตรวจแอลกอฮอล์_${dateSuffix}.xls`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    showNotification("ส่งออกรายงาน Excel พร้อมรูปภาพหลักฐานเรียบร้อยแล้ว", "success", "ส่งออกสำเร็จ");
   };
 
   // 10. Dashboard Stats Calculations
@@ -2248,7 +2388,7 @@ export default function App() {
                 dbStatus === "connected" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
                 dbStatus === "connecting" ? "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse" :
                 "bg-rose-50 text-rose-700 border border-rose-200"
-              }`}>
+              }`} title={dbErrorMessage || undefined}>
                 <span className={`w-1.5 h-1.5 rounded-full ${
                   dbStatus === "connected" ? "bg-emerald-500 animate-pulse" :
                   dbStatus === "connecting" ? "bg-amber-500" :
@@ -2258,6 +2398,11 @@ export default function App() {
                  dbStatus === "connecting" ? "กำลังเชื่อมคลาวด์..." :
                  "เชื่อมต่อคลาวด์ผิดพลาด (Offline)"}
               </span>
+              {dbErrorMessage && dbStatus === "error" && (
+                <span className="text-[10px] text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded font-sans max-w-xs truncate" title={dbErrorMessage}>
+                  สาเหตุ: {dbErrorMessage}
+                </span>
+              )}
               {dbStatus !== "connected" && (
                 <button
                   type="button"
@@ -4832,32 +4977,56 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={handleExportCSV}
-                  className="flex items-center gap-1 justify-center bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-sans font-bold px-3 py-2 rounded-xl transition cursor-pointer"
-                >
-                  <Download size={14} /> EXPORT CSV
-                </button>
+              <div className="flex flex-col gap-2 w-full sm:w-auto">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowPrintReport(true)}
+                    className="flex items-center gap-1.5 justify-center bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-sans font-bold px-3.5 py-2 rounded-xl transition-all duration-150 cursor-pointer shadow-sm hover:shadow"
+                    title="เปิดหน้าต่างพิมพ์รายงานพร้อมแสดงรูปถ่ายและลายเซ็นทุกรายการแบบสมบูรณ์ 100%"
+                  >
+                    <Printer size={14} /> พิมพ์รายงาน PDF (แนะนำ มีรูปถ่าย)
+                  </button>
 
-                {logs.length === 0 ? (
                   <button
                     type="button"
-                    onClick={handleLoadMockLogs}
-                    className="flex items-center gap-1 justify-center bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-sans font-medium px-3 py-2 rounded-xl transition cursor-pointer"
+                    onClick={handleExportExcel}
+                    className="flex items-center gap-1.5 justify-center bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-sans font-bold px-3 py-2 rounded-xl transition-all duration-150 cursor-pointer shadow-sm hover:shadow-md"
+                    title="ดาวน์โหลดรายงานในรูปแบบ Excel พร้อมรูปถ่ายหลักฐานประกอบ"
                   >
-                    โหลดข้อมูลจำลอง
+                    <FileSpreadsheet size={14} /> EXPORT EXCEL
                   </button>
-                ) : (
+
                   <button
                     type="button"
-                    onClick={handleResetAllLogs}
-                    className="flex items-center gap-1 justify-center bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 text-xs font-sans font-medium px-3 py-2 rounded-xl transition cursor-pointer"
+                    onClick={handleExportCSV}
+                    className="flex items-center gap-1.5 justify-center bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-sans font-bold px-3 py-2 rounded-xl transition cursor-pointer"
                   >
-                    ลบทั้งหมด
+                    <Download size={14} /> EXPORT CSV
                   </button>
-                )}
+
+                  {logs.length === 0 ? (
+                    <button
+                      type="button"
+                      onClick={handleLoadMockLogs}
+                      className="flex items-center gap-1 justify-center bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-sans font-medium px-3 py-2 rounded-xl transition cursor-pointer"
+                    >
+                      โหลดข้อมูลจำลอง
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResetAllLogs}
+                      className="flex items-center gap-1 justify-center bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 text-xs font-sans font-medium px-3 py-2 rounded-xl transition cursor-pointer"
+                    >
+                      ลบทั้งหมด
+                    </button>
+                  )}
+                </div>
+
+                <p className="text-[10px] text-slate-500 font-sans italic">
+                  💡 คำแนะนำ: บราวเซอร์/Excel บางรุ่นอาจบล็อกรูปภาพเพื่อความปลอดภัย หากรูปในไฟล์ Excel ไม่สามารถแสดงได้ แนะนำใช้ปุ่ม <strong>"พิมพ์รายงาน PDF"</strong> หรือใช้การคัดลอก (Copy) ตารางจากหน้าเว็บไปวางใน Excel โดยตรง
+                </p>
               </div>
             </div>
 
@@ -5749,6 +5918,180 @@ export default function App() {
                 >
                   <FileCheck size={12} /> ยืนยันการนำเข้าข้อมูล
                 </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ================= PRINT REPORT PREVIEW OVERLAY MODAL ================= */}
+      <AnimatePresence>
+        {showPrintReport && (
+          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[200] print:absolute print:inset-0 print:bg-white print:p-0" style={{ zIndex: 99999 }}>
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white border border-slate-200 max-w-5xl w-full h-[90vh] rounded-2xl overflow-hidden shadow-2xl flex flex-col print:h-auto print:w-full print:border-none print:shadow-none print:rounded-none"
+            >
+              {/* Header with Print and Close controls - hidden on actual print */}
+              <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0 print:hidden">
+                <div className="flex items-center gap-2">
+                  <Printer className="text-indigo-600" size={20} />
+                  <div>
+                    <h3 className="text-sm font-black text-slate-800 font-sans">
+                      ตัวอย่างก่อนพิมพ์ (Print Preview)
+                    </h3>
+                    <p className="text-[10px] text-slate-500 font-sans mt-0.5">
+                      สามารถสั่งพิมพ์ออกทางเครื่องพิมพ์ หรือบันทึกเป็นไฟล์ PDF เพื่อเก็บประวัติพร้อมรูปถ่ายหลักฐาน
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="flex items-center gap-1.5 justify-center bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-sans font-bold px-4 py-2 rounded-xl transition cursor-pointer shadow-sm hover:shadow"
+                  >
+                    <Printer size={14} /> พิมพ์รายงาน / บันทึก PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrintReport(false)}
+                    className="flex items-center gap-1 justify-center bg-slate-200 hover:bg-slate-300 active:scale-95 text-slate-700 text-xs font-sans font-bold px-3 py-2 rounded-xl transition cursor-pointer"
+                  >
+                    <X size={14} /> ปิดหน้าต่าง
+                  </button>
+                </div>
+              </div>
+
+              {/* Scrollable Printable Container */}
+              <div className="flex-1 overflow-y-auto p-8 print:p-0 print:overflow-visible bg-slate-100 print:bg-white">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm max-w-4xl mx-auto print:border-none print:shadow-none print:p-0 print:rounded-none">
+                  {/* Business Header */}
+                  <div className="text-center pb-6 border-b border-slate-200">
+                    <h2 className="text-xl font-bold text-slate-900 font-sans tracking-tight">
+                      รายงานผลคัดกรองการวัดปริมาณแอลกอฮอล์รายวัน
+                    </h2>
+                    <p className="text-xs text-slate-500 font-sans mt-1">
+                      {calendarMode === "SINGLE" 
+                        ? `ประจำวันที่ ${selectedCalendarDate.getDate()} ${THAI_MONTHS[selectedCalendarDate.getMonth()]} พ.ศ. ${selectedCalendarDate.getFullYear() + 543}`
+                        : calendarMode === "RANGE"
+                        ? `ระหว่างวันที่ ${selectedCalendarDate.getDate()} ${THAI_MONTHS[selectedCalendarDate.getMonth()]} พ.ศ. ${selectedCalendarDate.getFullYear() + 543} ถึงวันที่ ${(selectedCalendarEndDate || selectedCalendarDate).getDate()} ${THAI_MONTHS[(selectedCalendarEndDate || selectedCalendarDate).getMonth()]} พ.ศ. ${(selectedCalendarEndDate || selectedCalendarDate).getFullYear() + 543}`
+                        : "บันทึกประวัติทั้งหมด"}
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-sans mt-0.5">
+                      ออกเอกสาร ณ วันที่ {new Date().toLocaleString("th-TH")}
+                    </p>
+                  </div>
+
+                  {/* Table with images */}
+                  <div className="mt-6 overflow-x-auto">
+                    <table className="w-full text-[11px] text-left border-collapse border border-slate-300">
+                      <thead>
+                        <tr className="bg-slate-100 border-b border-slate-300 text-[10px] font-bold text-slate-700 font-sans text-center">
+                          <th className="border border-slate-300 p-2 w-12">ลำดับ</th>
+                          <th className="border border-slate-300 p-2 w-28">วันและเวลา</th>
+                          <th className="border border-slate-300 p-2 text-left">ชื่อ-นามสกุลพนักงาน</th>
+                          <th className="border border-slate-300 p-2 w-20">รหัส/สังกัด</th>
+                          <th className="border border-slate-300 p-2 w-14">แอลกอฮอล์</th>
+                          <th className="border border-slate-300 p-2 w-16">ผลตรวจ</th>
+                          <th className="border border-slate-300 p-2 text-left">อาการ / หมายเหตุ</th>
+                          <th className="border border-slate-300 p-2 w-24">รูปหลักฐาน</th>
+                          <th className="border border-slate-300 p-2 w-24">ลายเซ็น</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dbFilteredLogs.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="border border-slate-300 p-8 text-center text-slate-400 font-sans">
+                              ไม่มีบันทึกข้อมูลตามประวัติและตัวกรองที่เลือก
+                            </td>
+                          </tr>
+                        ) : (
+                          dbFilteredLogs.map((log, index) => {
+                            const dateStr = new Date(log.timestamp).toLocaleString("th-TH").replace(/,/g, "");
+                            const statusStr = log.isLeave ? "ลา/ไม่ได้ตรวจ" : (log.isPassed ? "ผ่านเกณฑ์" : "ไม่ผ่านเกณฑ์");
+                            const statusColor = log.isLeave ? "text-amber-700 bg-amber-50" : (log.isPassed ? "text-emerald-700 bg-emerald-50" : "text-red-700 bg-red-50");
+                            const attemptInfo = getLogAttemptInfo(log.id);
+                            const attemptStr = log.isLeave ? "" : `(ครั้งที่ ${attemptInfo.attempt})`;
+                            const symptomsStr = log.isLeave ? "ไม่ได้ตรวจคัดกรองเนื่องจากลางาน" : log.symptoms.join("; ");
+                            const notesText = log.notes ? `[หมายเหตุ: ${log.notes}]` : "";
+
+                            return (
+                              <tr key={log.id} className="hover:bg-slate-50/50 text-slate-800 font-sans border-b border-slate-300">
+                                <td className="border border-slate-300 p-2 text-center">{index + 1}</td>
+                                <td className="border border-slate-300 p-2 text-center font-mono text-[10px] leading-snug">
+                                  {dateStr}
+                                </td>
+                                <td className="border border-slate-300 p-2 font-bold leading-tight">
+                                  <div>{log.employeeName}</div>
+                                  <div className="text-[9px] text-slate-500 font-normal mt-0.5">{attemptStr}</div>
+                                </td>
+                                <td className="border border-slate-300 p-2 text-center text-[10px] leading-snug">
+                                  <div className="font-mono font-medium">{log.employeeId || "ทั่วไป"}</div>
+                                  <div className="text-slate-500 text-[9px] mt-0.5 truncate">{log.department || ""}</div>
+                                </td>
+                                <td className="border border-slate-300 p-2 text-center font-mono font-bold text-slate-900">
+                                  {log.isLeave ? "-" : `${log.alcoholLevel} mg%`}
+                                </td>
+                                <td className={`border border-slate-300 p-2 text-center font-bold text-[10px] ${statusColor}`}>
+                                  {statusStr}
+                                </td>
+                                <td className="border border-slate-300 p-2 leading-relaxed">
+                                  <div className="text-[10px]">{symptomsStr}</div>
+                                  {notesText && <div className="text-[9px] text-slate-500 mt-0.5 italic">{notesText}</div>}
+                                </td>
+                                <td className="border border-slate-300 p-1.5 text-center vertical-middle">
+                                  {log.photo ? (
+                                    <div className="flex justify-center">
+                                      <img
+                                        src={log.photo}
+                                        alt=""
+                                        className="w-16 h-12 object-cover rounded border border-slate-300"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <span className="text-[9px] text-slate-400">ไม่มีรูปภาพ</span>
+                                  )}
+                                </td>
+                                <td className="border border-slate-300 p-1.5 text-center vertical-middle">
+                                  {log.signature ? (
+                                    <div className="flex justify-center">
+                                      <img
+                                        src={log.signature}
+                                        alt=""
+                                        className="max-w-16 max-h-10 object-contain"
+                                        referrerPolicy="no-referrer"
+                                      />
+                                    </div>
+                                  ) : (
+                                    <span className="text-[9px] text-slate-400">ไม่ได้เซ็น</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Verification Footer Signatures */}
+                  <div className="mt-12 grid grid-cols-2 gap-8 text-center font-sans">
+                    <div className="flex flex-col items-center">
+                      <div className="w-48 border-b border-slate-400 h-10"></div>
+                      <p className="text-xs font-bold text-slate-700 mt-2">ลงชื่อผู้บันทึก/ผู้รับผิดชอบการคัดกรอง</p>
+                      <p className="text-[10px] text-slate-500 mt-1">( {witness || "ผู้ตรวจการคัดกรอง"} )</p>
+                    </div>
+                    <div className="flex flex-col items-center">
+                      <div className="w-48 border-b border-slate-400 h-10"></div>
+                      <p className="text-xs font-bold text-slate-700 mt-2">ลงชื่อผู้ตรวจสอบ/พนักงานเจ้าหน้าที่หลัก</p>
+                      <p className="text-[10px] text-slate-500 mt-1">( ............................................................ )</p>
+                    </div>
+                  </div>
+                </div>
               </div>
             </motion.div>
           </div>
