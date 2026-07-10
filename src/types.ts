@@ -4,6 +4,7 @@ export interface Employee {
   department: string;
   role?: string;
   photo?: string; // Base64 registered face photo
+  updatedAt?: string; // ISO string for merging
 }
 
 export interface AlcoholTestLog {
@@ -32,4 +33,5 @@ export interface AppSettings {
   retestGracePeriodMinutes: number; // grace period in minutes for re-testing after failing
   adminPasscode: string; // passcode for modifying databases or removing logs
   autoBackupToDrive?: boolean;
+  updatedAt?: string; // ISO string for merging
 }

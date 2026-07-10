@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User } from "firebase/auth";
-import { initializeFirestore, enableMultiTabIndexedDbPersistence } from "firebase/firestore";
+import { initializeFirestore, enableMultiTabIndexedDbPersistence, disableNetwork } from "firebase/firestore";
 
 const firebaseConfig = {
   projectId: "gen-lang-client-0500124353",

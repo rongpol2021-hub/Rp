@@ -66,7 +66,8 @@ import {
   deleteDoc,
   onSnapshot,
   getDocs,
-  getDoc
+  getDoc,
+  disableNetwork
 } from "firebase/firestore";
 import {
   initAuth,
@@ -79,6 +80,16 @@ import {
   GoogleDriveFile,
   db
 } from "./services/googleDrive";
+
+// Helper to convert an SVG string to a safe, browser-compatible Base64 Data URL
+const svgToBase64 = (svgString: string): string => {
+  try {
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`;
+  } catch (err) {
+    console.error("Failed to encode SVG to base64:", err);
+    return `data:image/svg+xml;utf8,${encodeURIComponent(svgString)}`;
+  }
+};
 
 export default function App() {
   // 1. Core State
@@ -353,14 +364,135 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState<"connecting" | "connected" | "error" | "offline">("connecting");
   const [dbRetryCount, setDbRetryCount] = useState<number>(0);
   const [dbErrorMessage, setDbErrorMessage] = useState<string | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
   const hasNotifiedOffline = useRef(false);
+  const hasNotifiedQuotaExceeded = useRef(false);
 
   const logsRef = useRef<AlcoholTestLog[]>([]);
   const employeesRef = useRef<Employee[]>([]);
   const supervisorsRef = useRef<string[]>([]);
   const departmentsRef = useRef<string[]>([]);
+
+  const deletedRecordsRef = useRef<Map<string, string>>(new Map());
+
+  // Load initial deleted records cache from localStorage
+  useEffect(() => {
+    try {
+      const local = localStorage.getItem("alcohol_deleted_records");
+      const list = local ? JSON.parse(local) : [];
+      deletedRecordsRef.current = new Map(list.map((item: any) => [item.id, item.type]));
+    } catch (e) {
+      console.error("Error parsing local deleted records:", e);
+    }
+  }, []);
+
+  // Helper to save logs safely to localStorage to prevent QuotaExceededError
+  const saveLogsToLocalStorage = (logsList: AlcoholTestLog[]) => {
+    try {
+      // Sort and keep only the latest 50 logs for localStorage cache to prevent QuotaExceededError
+      const sorted = [...logsList].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const prunedLogs = sorted.slice(0, 50);
+      localStorage.setItem("alcohol_logs", JSON.stringify(prunedLogs));
+    } catch (error) {
+      console.warn("Failed to write logs to localStorage (QuotaExceededError). Retrying with fewer items...", error);
+      try {
+        const sorted = [...logsList].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        const prunedLogs = sorted.slice(0, 20);
+        localStorage.setItem("alcohol_logs", JSON.stringify(prunedLogs));
+      } catch (e2) {
+        console.error("Critical failure: localStorage is completely full.", e2);
+      }
+    }
+  };
+
+  // Helper to save employees safely to localStorage
+  const saveEmployeesToLocalStorage = (employeesList: Employee[]) => {
+    try {
+      localStorage.setItem("alcohol_employees", JSON.stringify(employeesList));
+    } catch (error) {
+      console.warn("Failed to write employees to localStorage. Retrying with pruned list...", error);
+      try {
+        // Keep up to 100 employees in local storage if quota is exceeded
+        const prunedEmps = employeesList.slice(0, 100);
+        localStorage.setItem("alcohol_employees", JSON.stringify(prunedEmps));
+      } catch (e2) {
+        console.error("Critical failure: localStorage is completely full.", e2);
+      }
+    }
+  };
+
+  // Safe wrapper for other localStorage setItem calls
+  const safeLocalStorageSetItem = (key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {
+      console.error(`safeLocalStorageSetItem failed for key "${key}":`, error);
+    }
+  };
+
+  const purgeDeletedRecords = (deletedMap: Map<string, string>) => {
+    let logsChanged = false;
+    const currentLogs = [...logsRef.current];
+    const filteredLogs = currentLogs.filter(log => {
+      if (deletedMap.has(log.id) && deletedMap.get(log.id) === "log") {
+        logsChanged = true;
+        return false;
+      }
+      return true;
+    });
+    if (logsChanged) {
+      logsRef.current = filteredLogs;
+      setLogs(filteredLogs);
+      saveLogsToLocalStorage(filteredLogs);
+    }
+
+    let empsChanged = false;
+    const currentEmps = [...employeesRef.current];
+    const filteredEmps = currentEmps.filter(emp => {
+      if (deletedMap.has(emp.id) && deletedMap.get(emp.id) === "employee") {
+        empsChanged = true;
+        return false;
+      }
+      return true;
+    });
+    if (empsChanged) {
+      employeesRef.current = filteredEmps;
+      setEmployees(filteredEmps);
+      saveEmployeesToLocalStorage(filteredEmps);
+    }
+
+    let supsChanged = false;
+    const currentSups = [...supervisorsRef.current];
+    const filteredSups = currentSups.filter(sup => {
+      if (deletedMap.has(sup) && deletedMap.get(sup) === "supervisor") {
+        supsChanged = true;
+        return false;
+      }
+      return true;
+    });
+    if (supsChanged) {
+      supervisorsRef.current = filteredSups;
+      setSupervisors(filteredSups);
+      safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(filteredSups));
+    }
+
+    let deptsChanged = false;
+    const currentDepts = [...departmentsRef.current];
+    const filteredDepts = currentDepts.filter(dept => {
+      if (deletedMap.has(dept) && deletedMap.get(dept) === "department") {
+        deptsChanged = true;
+        return false;
+      }
+      return true;
+    });
+    if (deptsChanged) {
+      departmentsRef.current = filteredDepts;
+      setDepartments(filteredDepts);
+      safeLocalStorageSetItem("alcohol_departments", JSON.stringify(filteredDepts));
+    }
+  };
 
 
 
@@ -511,12 +643,11 @@ export default function App() {
 
       // 2a. Setup real-time snapshot listeners for everything first (non-blocking)
       try {
-        let loadedCounts = 0;
-        const totalListeners = 5;
+        const loadedCollections = new Set<string>();
 
-        const checkAllLoaded = () => {
-          loadedCounts++;
-          if (loadedCounts >= totalListeners) {
+        const checkAllLoaded = (collectionName: string) => {
+          loadedCollections.add(collectionName);
+          if (loadedCollections.size >= 6) {
             isLoaded = true;
             if (timeoutId) clearTimeout(timeoutId);
             setDbStatus("connected");
@@ -524,357 +655,278 @@ export default function App() {
           }
         };
 
-        // 1. Logs
-        const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
-          const isInitial = initialLoadMap.logs;
-          initialLoadMap.logs = false;
-
-          if (snapshot.empty) {
-            if (isInitial) {
-              const localLogsStr = localStorage.getItem("alcohol_logs");
-              const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
-              if (localLogs && localLogs.length > 0) {
-                console.log("Firestore logs collection is empty. Seeding local logs...");
-                localLogs.forEach((log: any) => {
-                  setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
-                    console.error("Error seeding log document:", err);
-                  });
-                });
-                logsRef.current = localLogs;
-                setLogs(localLogs);
-              } else {
-                logsRef.current = [];
-                setLogs([]);
-                localStorage.setItem("alcohol_logs", "[]");
-              }
-            } else {
-              // User manually deleted the last log document
-              logsRef.current = [];
-              setLogs([]);
-              localStorage.setItem("alcohol_logs", "[]");
+        const handleConnectionError = (collectionKey: string, err: any) => {
+          console.error(`Error listening to ${collectionKey}:`, err);
+          const isQuotaExceeded = err?.code === "resource-exhausted" || 
+                                  (err?.message && (err.message.includes("quota") || err.message.includes("exhausted") || err.message.includes("Quota")));
+          if (isQuotaExceeded) {
+            setDbStatus("offline");
+            setDbErrorMessage("โควตาระบบคลาวด์ฟรีเต็มชั่วคราววันนี้ แอปพลิเคชันยังคงบันทึกข้อมูลเรียลไทม์ในอุปกรณ์ของคุณอย่างปลอดภัยและจะซิงค์ขึ้นระบบคลาวด์โดยอัตโนมัติเมื่อสัญญาณและระบบพร้อม");
+            if (!hasNotifiedQuotaExceeded.current) {
+              showNotification(
+                "เชื่อมต่อระบบคลาวด์เรียลไทม์: โควตาระบบคลาวด์ฟรีเต็มชั่วคราวแล้ว แต่ข้อมูลจะถูกเซฟลงในเครื่องอย่างปลอดภัย และอัปโหลดซิงค์ระหว่างโทรศัพท์และเครื่องอื่น ๆ โดยอัตโนมัติเมื่อระบบคลาวด์พร้อม",
+                "info",
+                "กำลังซิงค์เรียลไทม์"
+              );
+              hasNotifiedQuotaExceeded.current = true;
             }
           } else {
-            const fetchedLogs: AlcoholTestLog[] = [];
-            snapshot.forEach((docSnap) => {
-              fetchedLogs.push(docSnap.data() as AlcoholTestLog);
-            });
-            
-            if (isInitial) {
-              const localLogsStr = localStorage.getItem("alcohol_logs");
-              const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
-              const cloudLogsMap = new Map(fetchedLogs.map(l => [l.id, l]));
-              
-              let mergedLogs = [...fetchedLogs];
-              let hasNewLocal = false;
-              
-              localLogs.forEach(localLog => {
-                if (localLog && localLog.id && !cloudLogsMap.has(localLog.id)) {
-                  console.log("Found unsynced offline log. Uploading to cloud:", localLog.id);
-                  setDoc(doc(db, "alcohol_logs", localLog.id), JSON.parse(JSON.stringify(localLog))).catch(err => {
-                    console.error("Error uploading offline log:", err);
-                  });
-                  mergedLogs.push(localLog);
-                  hasNewLocal = true;
-                }
-              });
-              
-              mergedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-              logsRef.current = mergedLogs;
-              setLogs(mergedLogs);
-              localStorage.setItem("alcohol_logs", JSON.stringify(mergedLogs));
-            } else {
-              fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-              logsRef.current = fetchedLogs;
-              setLogs(fetchedLogs);
-              localStorage.setItem("alcohol_logs", JSON.stringify(fetchedLogs));
-            }
+            setDbStatus("error");
+            setDbErrorMessage(`เชื่อมโยงข้อมูล${collectionKey === "logs" ? "ประวัติลมเป่า" : collectionKey === "employees" ? "รายชื่อพนักงาน" : collectionKey === "supervisors" ? "รายชื่อผู้ควบคุม" : collectionKey === "departments" ? "รายชื่อแผนก" : "ตั้งค่าระบบ"}ล้มเหลว: ${err?.message || String(err)}`);
           }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to logs:", err);
-          setDbStatus("error");
-          setDbErrorMessage(`เชื่อมโยงประวัติลมเป่าล้มเหลว: ${err.message || String(err)}`);
           if (!isLoaded) {
             loadLocalStorageFallback();
             isLoaded = true;
           }
           setIsDbLoading(false);
+        };
+
+        // 0. Deleted Records Tombstones (Loaded first so other collections can check against it)
+        const unsubDeleted = onSnapshot(collection(db, "deleted_records"), (snapshot) => {
+          const deletedMap = new Map<string, string>();
+          const deletedList: {id: string, type: string}[] = [];
+          snapshot.forEach((docSnap) => {
+            const data = docSnap.data();
+            if (data.id) {
+              deletedMap.set(data.id, data.type);
+              deletedList.push({ id: data.id, type: data.type });
+            }
+          });
+          safeLocalStorageSetItem("alcohol_deleted_records", JSON.stringify(deletedList));
+          deletedRecordsRef.current = deletedMap;
+          
+          // Proactively purge any locally loaded items that have been deleted
+          purgeDeletedRecords(deletedMap);
+          checkAllLoaded("deleted_records");
+        }, (err) => {
+          handleConnectionError("deleted_records", err);
+          checkAllLoaded("deleted_records");
         });
+        unsubs.push(unsubDeleted);
+
+        // 1. Logs
+        const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
+          const fetchedLogs: AlcoholTestLog[] = [];
+          snapshot.forEach((docSnap) => {
+            fetchedLogs.push(docSnap.data() as AlcoholTestLog);
+          });
+
+          const localLogsStr = localStorage.getItem("alcohol_logs");
+          const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
+          const isLogsSeeded = localStorage.getItem("alcohol_logs_seeded") === "true";
+          
+          if (snapshot.empty && localLogs.length === 0 && !isLogsSeeded) {
+            console.log("Both Firestore and localStorage logs are empty. Seeding INITIAL_LOGS...");
+            INITIAL_LOGS.forEach(log => {
+              setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
+                console.error("Error seeding initial log:", err);
+              });
+            });
+            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
+            logsRef.current = INITIAL_LOGS;
+            setLogs(INITIAL_LOGS);
+            saveLogsToLocalStorage(INITIAL_LOGS);
+          } else if (snapshot.empty && localLogs.length > 0) {
+            console.log("Firestore is empty but local logs exist. Syncing local logs to Firestore...");
+            localLogs.forEach(log => {
+              setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
+                console.error("Error syncing local log to empty Firestore:", err);
+              });
+            });
+            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
+            logsRef.current = localLogs;
+            setLogs(localLogs);
+          } else {
+            // Mark as seeded/initialized since we either have logs, or are intentionally empty
+            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
+
+            // Filter out deleted items
+            const activeFetched = fetchedLogs.filter(l => !(deletedRecordsRef.current.has(l.id) && deletedRecordsRef.current.get(l.id) === "log"));
+
+            activeFetched.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            logsRef.current = activeFetched;
+            setLogs(activeFetched);
+            saveLogsToLocalStorage(activeFetched);
+          }
+          
+          checkAllLoaded("logs");
+        }, (err) => handleConnectionError("logs", err));
         unsubs.push(unsubLogs);
 
         // 2. Employees
         const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
-          const isInitial = initialLoadMap.employees;
-          initialLoadMap.employees = false;
+          const fetchedEmployees: Employee[] = [];
+          snapshot.forEach((docSnap) => {
+            fetchedEmployees.push(docSnap.data() as Employee);
+          });
 
-          if (snapshot.empty) {
-            if (isInitial) {
-              const localEmployeesStr = localStorage.getItem("alcohol_employees");
-              const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
-              if (localEmployees && localEmployees.length > 0) {
-                console.log("Firestore employees collection is empty. Seeding local employees...");
-                localEmployees.forEach((emp: any) => {
-                  setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
-                    console.error("Error seeding employee document:", err);
-                  });
-                });
-                employeesRef.current = localEmployees;
-                setEmployees(localEmployees);
-              } else {
-                employeesRef.current = [];
-                setEmployees([]);
-                localStorage.setItem("alcohol_employees", "[]");
-              }
-            } else {
-              // User manually deleted the last employee document
-              employeesRef.current = [];
-              setEmployees([]);
-              localStorage.setItem("alcohol_employees", "[]");
-            }
-          } else {
-            const fetchedEmployees: Employee[] = [];
-            snapshot.forEach((docSnap) => {
-              fetchedEmployees.push(docSnap.data() as Employee);
-            });
-            
-            if (isInitial) {
-              const localEmployeesStr = localStorage.getItem("alcohol_employees");
-              const localEmployees: Employee[] = localEmployeesStr ? JSON.parse(localEmployeesStr) : [];
-              const cloudEmployeesMap = new Map(fetchedEmployees.map(e => [e.id, e]));
-              
-              let mergedEmployees = [...fetchedEmployees];
-              let hasNewLocal = false;
-              
-              localEmployees.forEach(localEmp => {
-                if (localEmp && localEmp.id && !cloudEmployeesMap.has(localEmp.id)) {
-                  console.log("Found unsynced offline employee. Uploading:", localEmp.id);
-                  setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
-                    console.error("Error uploading offline employee:", err);
-                  });
-                  mergedEmployees.push(localEmp);
-                  hasNewLocal = true;
-                }
+          const localEmployeesStr = localStorage.getItem("alcohol_employees");
+          const localEmployees: Employee[] = localEmployeesStr ? JSON.parse(localEmployeesStr) : [];
+          const isEmployeesSeeded = localStorage.getItem("alcohol_employees_seeded") === "true";
+
+          if (snapshot.empty && localEmployees.length === 0 && !isEmployeesSeeded) {
+            console.log("Both Firestore and localStorage employees are empty. Seeding REGISTERED_EMPLOYEES...");
+            REGISTERED_EMPLOYEES.forEach(emp => {
+              setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
+                console.error("Error seeding default employee:", err);
               });
-              
-              employeesRef.current = mergedEmployees;
-              setEmployees(mergedEmployees);
-              localStorage.setItem("alcohol_employees", JSON.stringify(mergedEmployees));
-            } else {
-              employeesRef.current = fetchedEmployees;
-              setEmployees(fetchedEmployees);
-              localStorage.setItem("alcohol_employees", JSON.stringify(fetchedEmployees));
-            }
+            });
+            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
+            employeesRef.current = REGISTERED_EMPLOYEES;
+            setEmployees(REGISTERED_EMPLOYEES);
+            saveEmployeesToLocalStorage(REGISTERED_EMPLOYEES);
+          } else if (snapshot.empty && localEmployees.length > 0) {
+            console.log("Firestore is empty but local employees exist. Syncing to Firestore...");
+            localEmployees.forEach(emp => {
+              setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
+                console.error("Error syncing local employee to empty Firestore:", err);
+              });
+            });
+            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
+            employeesRef.current = localEmployees;
+            setEmployees(localEmployees);
+          } else {
+            // Mark as seeded/initialized since we either have employees or are intentionally empty
+            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
+
+            const activeFetched = fetchedEmployees.filter(e => !(deletedRecordsRef.current.has(e.id) && deletedRecordsRef.current.get(e.id) === "employee"));
+
+            employeesRef.current = activeFetched;
+            setEmployees(activeFetched);
+            saveEmployeesToLocalStorage(activeFetched);
           }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to employees:", err);
-          setDbStatus("error");
-          setDbErrorMessage(`เชื่อมโยงรายชื่อพนักงานล้มเหลว: ${err.message || String(err)}`);
-          if (!isLoaded) {
-            loadLocalStorageFallback();
-            isLoaded = true;
-          }
-          setIsDbLoading(false);
-        });
+
+          checkAllLoaded("employees");
+        }, (err) => handleConnectionError("employees", err));
         unsubs.push(unsubEmployees);
 
         // 3. Supervisors
         const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
-          const isInitial = initialLoadMap.supervisors;
-          initialLoadMap.supervisors = false;
+          const fetchedSupervisors: string[] = [];
+          snapshot.forEach((docSnap) => {
+            const name = docSnap.data().name as string;
+            if (name) fetchedSupervisors.push(name);
+          });
 
-          if (snapshot.empty) {
-            if (isInitial) {
-              const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
-              const localSupervisors = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : DEFAULT_SUPERVISORS;
-              if (localSupervisors && localSupervisors.length > 0) {
-                console.log("Firestore supervisors collection is empty. Seeding local supervisors...");
-                localSupervisors.forEach((s: string) => {
-                  setDoc(doc(db, "supervisors", s), { name: s }).catch(err => {
-                    console.error("Error seeding supervisor document:", err);
-                  });
-                });
-                supervisorsRef.current = localSupervisors;
-                setSupervisors(localSupervisors);
-              } else {
-                supervisorsRef.current = [];
-                setSupervisors([]);
-                localStorage.setItem("alcohol_supervisors", "[]");
-              }
-            } else {
-              // User manually deleted the last supervisor
-              supervisorsRef.current = [];
-              setSupervisors([]);
-              localStorage.setItem("alcohol_supervisors", "[]");
-            }
-          } else {
-            const fetchedSupervisors: string[] = [];
-            snapshot.forEach((docSnap) => {
-              const name = docSnap.data().name as string;
-              if (name) fetchedSupervisors.push(name);
-            });
-            
-            if (isInitial) {
-              const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
-              const localSupervisors: string[] = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : [];
-              const cloudSupervisorsSet = new Set(fetchedSupervisors);
-              
-              let mergedSupervisors = [...fetchedSupervisors];
-              let hasNewLocal = false;
-              
-              localSupervisors.forEach(localSup => {
-                if (localSup && !cloudSupervisorsSet.has(localSup)) {
-                  console.log("Found unsynced offline supervisor:", localSup);
-                  setDoc(doc(db, "supervisors", localSup), { name: localSup }).catch(err => {
-                    console.error("Error uploading offline supervisor:", err);
-                  });
-                  mergedSupervisors.push(localSup);
-                  hasNewLocal = true;
-                }
+          const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
+          const localSupervisors: string[] = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : [];
+          const isSupervisorsSeeded = localStorage.getItem("alcohol_supervisors_seeded") === "true";
+
+          if (snapshot.empty && localSupervisors.length === 0 && !isSupervisorsSeeded) {
+            console.log("Both Firestore and localStorage supervisors are empty. Seeding DEFAULT_SUPERVISORS...");
+            DEFAULT_SUPERVISORS.forEach(sup => {
+              setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
+                console.error("Error seeding default supervisor:", err);
               });
-              
-              supervisorsRef.current = mergedSupervisors;
-              setSupervisors(mergedSupervisors);
-              localStorage.setItem("alcohol_supervisors", JSON.stringify(mergedSupervisors));
-            } else {
-              supervisorsRef.current = fetchedSupervisors;
-              setSupervisors(fetchedSupervisors);
-              localStorage.setItem("alcohol_supervisors", JSON.stringify(fetchedSupervisors));
-            }
+            });
+            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
+            supervisorsRef.current = DEFAULT_SUPERVISORS;
+            setSupervisors(DEFAULT_SUPERVISORS);
+            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(DEFAULT_SUPERVISORS));
+          } else if (snapshot.empty && localSupervisors.length > 0) {
+            console.log("Firestore is empty but local supervisors exist. Syncing to Firestore...");
+            localSupervisors.forEach(sup => {
+              setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
+                console.error("Error syncing local supervisor to empty Firestore:", err);
+              });
+            });
+            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
+            supervisorsRef.current = localSupervisors;
+            setSupervisors(localSupervisors);
+          } else {
+            // Mark as seeded/initialized since we either have supervisors or are intentionally empty
+            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
+
+            const activeFetched = fetchedSupervisors.filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
+
+            supervisorsRef.current = activeFetched;
+            setSupervisors(activeFetched);
+            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(activeFetched));
           }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to supervisors:", err);
-          setDbStatus("error");
-          setDbErrorMessage(`เชื่อมโยงรายชื่อผู้ควบคุมล้มเหลว: ${err.message || String(err)}`);
-          if (!isLoaded) {
-            loadLocalStorageFallback();
-            isLoaded = true;
-          }
-          setIsDbLoading(false);
-        });
+
+          checkAllLoaded("supervisors");
+        }, (err) => handleConnectionError("supervisors", err));
         unsubs.push(unsubSupervisors);
 
         // 4. Departments
         const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
-          const isInitial = initialLoadMap.departments;
-          initialLoadMap.departments = false;
+          const fetchedDepartments: string[] = [];
+          snapshot.forEach((docSnap) => {
+            const name = docSnap.data().name as string;
+            if (name) fetchedDepartments.push(name);
+          });
 
-          if (snapshot.empty) {
-            if (isInitial) {
-              const localDeptsStr = localStorage.getItem("alcohol_departments");
-              const localDepts = localDeptsStr ? JSON.parse(localDeptsStr) : DEPARTMENTS;
-              if (localDepts && localDepts.length > 0) {
-                console.log("Firestore departments collection is empty. Seeding local departments...");
-                localDepts.forEach((d: string) => {
-                  setDoc(doc(db, "departments", d), { name: d }).catch(err => {
-                    console.error("Error seeding department document:", err);
-                  });
-                });
-                departmentsRef.current = localDepts;
-                setDepartments(localDepts);
-              } else {
-                departmentsRef.current = [];
-                setDepartments([]);
-                localStorage.setItem("alcohol_departments", "[]");
-              }
-            } else {
-              // User manually deleted the last department
-              departmentsRef.current = [];
-              setDepartments([]);
-              localStorage.setItem("alcohol_departments", "[]");
-            }
-          } else {
-            const fetchedDepartments: string[] = [];
-            snapshot.forEach((docSnap) => {
-              const name = docSnap.data().name as string;
-              if (name) fetchedDepartments.push(name);
-            });
-            
-            if (isInitial) {
-              const localDeptsStr = localStorage.getItem("alcohol_departments");
-              const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
-              const cloudDeptsSet = new Set(fetchedDepartments);
-              
-              let mergedDepts = [...fetchedDepartments];
-              let hasNewLocal = false;
-              
-              localDepts.forEach(localDept => {
-                if (localDept && !cloudDeptsSet.has(localDept)) {
-                  console.log("Found unsynced offline department:", localDept);
-                  setDoc(doc(db, "departments", localDept), { name: localDept }).catch(err => {
-                    console.error("Error uploading offline department:", err);
-                  });
-                  mergedDepts.push(localDept);
-                  hasNewLocal = true;
-                }
+          const localDeptsStr = localStorage.getItem("alcohol_departments");
+          const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
+          const isDepartmentsSeeded = localStorage.getItem("alcohol_departments_seeded") === "true";
+
+          if (snapshot.empty && localDepts.length === 0 && !isDepartmentsSeeded) {
+            console.log("Both Firestore and localStorage departments are empty. Seeding DEPARTMENTS...");
+            DEPARTMENTS.forEach(dept => {
+              setDoc(doc(db, "departments", dept), { name: dept }).catch(err => {
+                console.error("Error seeding default department:", err);
               });
-              
-              departmentsRef.current = mergedDepts;
-              setDepartments(mergedDepts);
-              localStorage.setItem("alcohol_departments", JSON.stringify(mergedDepts));
-            } else {
-              departmentsRef.current = fetchedDepartments;
-              setDepartments(fetchedDepartments);
-              localStorage.setItem("alcohol_departments", JSON.stringify(fetchedDepartments));
-            }
+            });
+            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
+            departmentsRef.current = DEPARTMENTS;
+            setDepartments(DEPARTMENTS);
+            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(DEPARTMENTS));
+          } else if (snapshot.empty && localDepts.length > 0) {
+            console.log("Firestore is empty but local departments exist. Syncing to Firestore...");
+            localDepts.forEach(dept => {
+              setDoc(doc(db, "departments", dept), { name: dept }).catch(err => {
+                console.error("Error syncing local department to empty Firestore:", err);
+              });
+            });
+            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
+            departmentsRef.current = localDepts;
+            setDepartments(localDepts);
+          } else {
+            // Mark as seeded/initialized since we either have departments or are intentionally empty
+            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
+
+            const activeFetched = fetchedDepartments.filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
+
+            departmentsRef.current = activeFetched;
+            setDepartments(activeFetched);
+            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(activeFetched));
           }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to departments:", err);
-          setDbStatus("error");
-          setDbErrorMessage(`เชื่อมโยงข้อมูลแผนกล้มเหลว: ${err.message || String(err)}`);
-          if (!isLoaded) {
-            loadLocalStorageFallback();
-            isLoaded = true;
-          }
-          setIsDbLoading(false);
-        });
+
+          checkAllLoaded("departments");
+        }, (err) => handleConnectionError("departments", err));
         unsubs.push(unsubDepartments);
 
         // 5. Settings
         const unsubSettings = onSnapshot(doc(db, "settings", "global"), (docSnap) => {
-          const isInitial = initialLoadMap.settings;
-          initialLoadMap.settings = false;
-
           if (docSnap.exists()) {
-            const parsed = docSnap.data() as AppSettings;
-            setSettings(parsed);
-            setWitness(parsed.testerName);
-            localStorage.setItem("alcohol_settings", JSON.stringify(parsed));
+            const cloudSettings = docSnap.data() as AppSettings;
+            setSettings(cloudSettings);
+            setWitness(cloudSettings.testerName);
+            safeLocalStorageSetItem("alcohol_settings", JSON.stringify(cloudSettings));
           } else {
-            if (isInitial) {
-              console.log("Firestore settings doc is empty. Seeding from local settings...");
-              const localSettingsStr = localStorage.getItem("alcohol_settings");
-              const defaultSettings = localSettingsStr ? JSON.parse(localSettingsStr) : {
-                defaultPassLimit: 50,
-                companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
-                testerName: "นรินทร์ สมบูรณ์ทรัพย์",
-                requireSignature: true,
-                requirePhoto: true,
-                retestGracePeriodMinutes: 15,
-                adminPasscode: "1234",
-                autoBackupToDrive: false
-              };
-              setDoc(doc(db, "settings", "global"), defaultSettings).catch(err => {
-                console.error("Error seeding global settings doc:", err);
-              });
-              setSettings(defaultSettings);
-              setWitness(defaultSettings.testerName);
-              localStorage.setItem("alcohol_settings", JSON.stringify(defaultSettings));
-            }
+            console.log("Firestore settings doc is empty. Seeding from local settings...");
+            const localSettingsStr = localStorage.getItem("alcohol_settings");
+            const defaultSettings = localSettingsStr ? JSON.parse(localSettingsStr) : {
+              defaultPassLimit: 50,
+              companyName: "คลังสินค้ากลาง (ศูนย์กระจายสินค้าภาคกลาง)",
+              testerName: "นรินทร์ สมบูรณ์ทรัพย์",
+              requireSignature: true,
+              requirePhoto: true,
+              retestGracePeriodMinutes: 15,
+              adminPasscode: "1234",
+              autoBackupToDrive: false,
+              updatedAt: new Date().toISOString()
+            };
+            setDoc(doc(db, "settings", "global"), defaultSettings).catch(err => {
+              console.error("Error seeding global settings doc:", err);
+            });
+            setSettings(defaultSettings);
+            setWitness(defaultSettings.testerName);
+            safeLocalStorageSetItem("alcohol_settings", JSON.stringify(defaultSettings));
           }
-          checkAllLoaded();
-        }, (err) => {
-          console.error("Error listening to settings:", err);
-          setDbStatus("error");
-          setDbErrorMessage(`เชื่อมโยงข้อมูลตั้งค่าระบบล้มเหลว: ${err.message || String(err)}`);
-          if (!isLoaded) {
-            loadLocalStorageFallback();
-            isLoaded = true;
-          }
-          setIsDbLoading(false);
-        });
+
+          checkAllLoaded("settings");
+        }, (err) => handleConnectionError("settings", err));
         unsubs.push(unsubSettings);
 
       } catch (err) {
@@ -904,6 +956,30 @@ export default function App() {
     }
   }, [dbStatus]);
 
+  // Handle browser online events and periodic auto-reconnection
+  useEffect(() => {
+    const handleOnline = () => {
+      if (hasNotifiedQuotaExceeded.current) return;
+      console.log("Network online detected. Triggering database sync reconnect...");
+      setDbRetryCount(prev => prev + 1);
+    };
+
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((dbStatus === "error" || dbStatus === "offline") && !hasNotifiedQuotaExceeded.current) {
+      const interval = setInterval(() => {
+        console.log("Database status is offline/error. Auto-retrying connection...");
+        setDbRetryCount(prev => prev + 1);
+      }, 15000); // Retry every 15 seconds
+      return () => clearInterval(interval);
+    }
+  }, [dbStatus]);
+
   const triggerAutoBackup = async (
     customLogs?: AlcoholTestLog[],
     customEmployees?: Employee[],
@@ -925,21 +1001,42 @@ export default function App() {
     }
   };
 
+  const handleSaveError = (err: any) => {
+    console.error("Error syncing to Firestore:", err);
+    const isQuotaExceeded = err?.code === "resource-exhausted" || 
+                            (err?.message && (err.message.includes("quota") || err.message.includes("exhausted") || err.message.includes("Quota")));
+    if (isQuotaExceeded) {
+      setDbStatus("offline");
+      setDbErrorMessage("โควตาระบบคลาวด์เต็มวันนี้ ระบบเซฟข้อมูลลงในเครื่องของคุณอย่างปลอดภัยและจะพยายามอัปโหลดซิงค์ขึ้นคลาวด์ให้อัตโนมัติในเบื้องหลังเมื่อช่องสัญญาณว่าง");
+      if (!hasNotifiedQuotaExceeded.current) {
+        showNotification(
+          "บันทึกข้อมูลเรียลไทม์ออนไลน์: ข้อมูลของคุณได้รับการบันทึกในเครื่องและเข้าสู่คิวสมาร์ทซิงค์ระบบคลาวด์แล้ว ข้อมูลจะซิงค์กับคอมพิวเตอร์และมือถืออื่น ๆ อัตโนมัติเมื่อระบบพร้อม",
+          "info",
+          "บันทึกข้อมูลแบบเรียลไทม์"
+        );
+        hasNotifiedQuotaExceeded.current = true;
+      }
+    }
+  };
+
   const saveLogs = async (updatedLogs: AlcoholTestLog[], isFullOverwrite: boolean = false) => {
+    const oldLogs = [...logsRef.current];
     setLogs(updatedLogs);
-    localStorage.setItem("alcohol_logs", JSON.stringify(updatedLogs));
+    logsRef.current = updatedLogs;
+    saveLogsToLocalStorage(updatedLogs);
     triggerAutoBackup(updatedLogs, undefined, undefined, undefined);
 
     try {
-      const currentLogsInDb = logsRef.current;
-      const oldLogsMap = new Map(currentLogsInDb.map(l => [l.id, l]));
+      const oldLogsMap = new Map(oldLogs.map(l => [l.id, l]));
 
       let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
-        deletePromises = currentLogsInDb
-          .filter(l => !newLogsMap.has(l.id))
-          .map(l => deleteDoc(doc(db, "alcohol_logs", l.id)));
+        const logsToDelete = oldLogs.filter(l => !newLogsMap.has(l.id));
+        deletePromises = logsToDelete.flatMap(l => [
+          deleteDoc(doc(db, "alcohol_logs", l.id)),
+          setDoc(doc(db, "deleted_records", l.id), { id: l.id, type: "log", timestamp: new Date().toISOString() })
+        ]);
       }
 
       const savePromises = updatedLogs
@@ -951,28 +1048,46 @@ export default function App() {
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
-      console.error("Error syncing logs to Firestore:", e);
+      handleSaveError(e);
     }
   };
 
   const saveEmployees = async (updatedEmployees: Employee[], isFullOverwrite: boolean = false) => {
-    setEmployees(updatedEmployees);
-    localStorage.setItem("alcohol_employees", JSON.stringify(updatedEmployees));
-    triggerAutoBackup(undefined, updatedEmployees, undefined, undefined);
+    const oldEmployees = [...employeesRef.current];
+    const oldEmpMap = new Map(oldEmployees.map(e => [e.id, e]));
+
+    const nowIso = new Date().toISOString();
+    const finalEmployees = updatedEmployees.map(emp => {
+      const old = oldEmpMap.get(emp.id);
+      const oldWithoutUpdated = old ? { ...old, updatedAt: undefined } : null;
+      const empWithoutUpdated = { ...emp, updatedAt: undefined };
+      if (!old || JSON.stringify(oldWithoutUpdated) !== JSON.stringify(empWithoutUpdated)) {
+        return {
+          ...emp,
+          updatedAt: nowIso
+        };
+      }
+      return emp;
+    });
+
+    setEmployees(finalEmployees);
+    employeesRef.current = finalEmployees;
+    saveEmployeesToLocalStorage(finalEmployees);
+    triggerAutoBackup(undefined, finalEmployees, undefined, undefined);
 
     try {
-      const currentEmployeesInDb = employeesRef.current;
-      const oldEmpMap = new Map(currentEmployeesInDb.map(e => [e.id, e]));
+      const finalEmpMap = new Map(finalEmployees.map(e => [e.id, e]));
 
       let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
-        const newEmpMap = new Map(updatedEmployees.map(e => [e.id, e]));
-        deletePromises = currentEmployeesInDb
-          .filter(e => !newEmpMap.has(e.id))
-          .map(e => deleteDoc(doc(db, "employees", e.id)));
+        const empsToDelete = oldEmployees.filter(e => !finalEmpMap.has(e.id));
+        deletePromises = empsToDelete.flatMap(e => [
+          deleteDoc(doc(db, "employees", e.id)),
+          setDoc(doc(db, "deleted_records", e.id), { id: e.id, type: "employee", timestamp: nowIso })
+        ]);
       }
 
-      const savePromises = updatedEmployees
+      const savePromises = finalEmployees
         .filter(e => {
           const old = oldEmpMap.get(e.id);
           return !old || JSON.stringify(old) !== JSON.stringify(e);
@@ -981,25 +1096,28 @@ export default function App() {
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
-      console.error("Error syncing employees to Firestore:", e);
+      handleSaveError(e);
     }
   };
 
   const saveSupervisors = async (updatedSupervisors: string[], isFullOverwrite: boolean = false) => {
+    const oldSupervisors = [...supervisorsRef.current];
     setSupervisors(updatedSupervisors);
-    localStorage.setItem("alcohol_supervisors", JSON.stringify(updatedSupervisors));
+    supervisorsRef.current = updatedSupervisors;
+    safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(updatedSupervisors));
     triggerAutoBackup(undefined, undefined, updatedSupervisors, undefined);
 
     try {
-      const currentSupervisorsInDb = supervisorsRef.current;
-      const oldSet = new Set(currentSupervisorsInDb);
+      const oldSet = new Set(oldSupervisors);
 
       let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newSet = new Set(updatedSupervisors);
-        deletePromises = currentSupervisorsInDb
-          .filter(name => !newSet.has(name))
-          .map(name => deleteDoc(doc(db, "supervisors", name)));
+        const supsToDelete = oldSupervisors.filter(name => !newSet.has(name));
+        deletePromises = supsToDelete.flatMap(name => [
+          deleteDoc(doc(db, "supervisors", name)),
+          setDoc(doc(db, "deleted_records", name), { id: name, type: "supervisor", timestamp: new Date().toISOString() })
+        ]);
       }
 
       const savePromises = updatedSupervisors
@@ -1008,25 +1126,28 @@ export default function App() {
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
-      console.error("Error syncing supervisors to Firestore:", e);
+      handleSaveError(e);
     }
   };
 
   const saveDepartments = async (updatedDepartments: string[], isFullOverwrite: boolean = false) => {
+    const oldDepartments = [...departmentsRef.current];
     setDepartments(updatedDepartments);
-    localStorage.setItem("alcohol_departments", JSON.stringify(updatedDepartments));
+    departmentsRef.current = updatedDepartments;
+    safeLocalStorageSetItem("alcohol_departments", JSON.stringify(updatedDepartments));
     triggerAutoBackup(undefined, undefined, undefined, updatedDepartments);
 
     try {
-      const currentDepartmentsInDb = departmentsRef.current;
-      const oldSet = new Set(currentDepartmentsInDb);
+      const oldSet = new Set(oldDepartments);
 
       let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newSet = new Set(updatedDepartments);
-        deletePromises = currentDepartmentsInDb
-          .filter(name => !newSet.has(name))
-          .map(name => deleteDoc(doc(db, "departments", name)));
+        const deptsToDelete = oldDepartments.filter(name => !newSet.has(name));
+        deletePromises = deptsToDelete.flatMap(name => [
+          deleteDoc(doc(db, "departments", name)),
+          setDoc(doc(db, "deleted_records", name), { id: name, type: "department", timestamp: new Date().toISOString() })
+        ]);
       }
 
       const savePromises = updatedDepartments
@@ -1035,17 +1156,149 @@ export default function App() {
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
-      console.error("Error syncing departments to Firestore:", e);
+      handleSaveError(e);
     }
   };
 
   const saveSettings = async (updatedSettings: AppSettings) => {
     setSettings(updatedSettings);
-    localStorage.setItem("alcohol_settings", JSON.stringify(updatedSettings));
+    safeLocalStorageSetItem("alcohol_settings", JSON.stringify(updatedSettings));
     try {
       await setDoc(doc(db, "settings", "global"), JSON.parse(JSON.stringify(updatedSettings)));
     } catch (e) {
-      console.error("Error syncing settings to Firestore:", e);
+      handleSaveError(e);
+    }
+  };
+
+  // Force upload local cache data to Cloud Firestore (for multi-device sync seeding)
+  const handleForceUploadToCloud = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    setDbStatus("connecting");
+    showNotification("กำลังดำเนินการอัปโหลดข้อมูลเครื่องนี้เพื่อเขียนทับฐานข้อมูลระบบคลาวด์...", "info", "ซิงค์ระบบคลาวด์");
+    
+    try {
+      // 1. Logs
+      for (const log of logs) {
+        await setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log)));
+      }
+      
+      // 2. Employees
+      for (const emp of employees) {
+        await setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp)));
+      }
+      
+      // 3. Supervisors
+      for (const sup of supervisors) {
+        await setDoc(doc(db, "supervisors", sup), { name: sup });
+      }
+      
+      // 4. Departments
+      for (const dept of departments) {
+        await setDoc(doc(db, "departments", dept), { name: dept });
+      }
+      
+      // 5. Settings
+      await setDoc(doc(db, "settings", "global"), JSON.parse(JSON.stringify(settings)));
+      
+      setDbStatus("connected");
+      setDbErrorMessage(null);
+      showNotification("สำเร็จ! อัปโหลดข้อมูลท้องถิ่นขึ้นระบบคลาวด์หลักเสร็จสมบูรณ์ ทุกเครื่องเปิดแอปจะเห็นข้อมูลตรงกัน", "success", "ซิงค์ข้อมูลสำเร็จ");
+    } catch (err: any) {
+      console.error("Force upload failed:", err);
+      setDbStatus("error");
+      setDbErrorMessage(`อัปโหลดล้มเหลว: ${err.message || String(err)}`);
+      showNotification(`ไม่สามารถส่งข้อมูลขึ้นคลาวด์: ${err.message || String(err)}`, "error", "ซิงค์คลาวด์ล้มเหลว");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Force download latest data from Cloud Firestore (overwriting local state & localStorage cache)
+  const handleForceDownloadFromCloud = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    setDbStatus("connecting");
+    showNotification("กำลังดึงข้อมูลล่าสุดจากระบบคลาวด์ลงมายังเครื่องนี้...", "info", "ซิงค์ระบบคลาวด์");
+
+    try {
+      // 1. Logs
+      const logsSnap = await getDocs(collection(db, "alcohol_logs"));
+      const fetchedLogs: AlcoholTestLog[] = [];
+      logsSnap.forEach(snap => {
+        if (snap.exists()) fetchedLogs.push(snap.data() as AlcoholTestLog);
+      });
+      
+      // 2. Employees
+      const empsSnap = await getDocs(collection(db, "employees"));
+      const fetchedEmps: Employee[] = [];
+      empsSnap.forEach(snap => {
+        if (snap.exists()) fetchedEmps.push(snap.data() as Employee);
+      });
+
+      // 3. Supervisors
+      const supsSnap = await getDocs(collection(db, "supervisors"));
+      const fetchedSups: string[] = [];
+      supsSnap.forEach(snap => {
+        if (snap.exists() && snap.data().name) fetchedSups.push(snap.data().name);
+      });
+
+      // 4. Departments
+      const deptsSnap = await getDocs(collection(db, "departments"));
+      const fetchedDepts: string[] = [];
+      deptsSnap.forEach(snap => {
+        if (snap.exists() && snap.data().name) fetchedDepts.push(snap.data().name);
+      });
+
+      // 5. Settings
+      const settingsSnap = await getDoc(doc(db, "settings", "global"));
+      let fetchedSettings: AppSettings | null = null;
+      if (settingsSnap.exists()) {
+        fetchedSettings = settingsSnap.data() as AppSettings;
+      }
+
+      // Apply to memory states & local caches
+      if (fetchedLogs.length > 0) {
+        fetchedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setLogs(fetchedLogs);
+        saveLogsToLocalStorage(fetchedLogs);
+        logsRef.current = fetchedLogs;
+      }
+      
+      if (fetchedEmps.length > 0) {
+        setEmployees(fetchedEmps);
+        saveEmployeesToLocalStorage(fetchedEmps);
+        employeesRef.current = fetchedEmps;
+      }
+
+      if (fetchedSups.length > 0) {
+        setSupervisors(fetchedSups);
+        safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(fetchedSups));
+        supervisorsRef.current = fetchedSups;
+      }
+
+      if (fetchedDepts.length > 0) {
+        setDepartments(fetchedDepts);
+        safeLocalStorageSetItem("alcohol_departments", JSON.stringify(fetchedDepts));
+        departmentsRef.current = fetchedDepts;
+      }
+
+      if (fetchedSettings) {
+        setSettings(fetchedSettings);
+        safeLocalStorageSetItem("alcohol_settings", JSON.stringify(fetchedSettings));
+        setWitness(fetchedSettings.testerName);
+      }
+
+      setDbStatus("connected");
+      setDbErrorMessage(null);
+      showNotification("สำเร็จ! ดาวน์โหลดข้อมูลล่าสุดจากคลาวด์และเขียนทับเครื่องนี้เรียบร้อยแล้ว", "success", "ซิงค์ข้อมูลสำเร็จ");
+    } catch (err: any) {
+      console.error("Force download failed:", err);
+      setDbStatus("error");
+      setDbErrorMessage(`ดาวน์โหลดล้มเหลว: ${err.message || String(err)}`);
+      showNotification(`ไม่สามารถดาวน์โหลดข้อมูล: ${err.message || String(err)}`, "error", "ซิงค์คลาวด์ล้มเหลว");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -1293,7 +1546,7 @@ export default function App() {
     if (!finalPhoto) {
       // Simple custom avatar generation to present visual context
       const textParam = encodeURIComponent(`${alcoholLevel} mg%`);
-      finalPhoto = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${isPassedResult ? "%231c1917" : "%23450a0a"}'/><circle cx='50' cy='35' r='20' fill='%23a8a29e'/><path d='M20 80c0-15 15-20 30-20s30 5 30 20' fill='%23a8a29e'/><text x='50' y='90' fill='${isPassedResult ? "%2310b981" : "%23ef4444"}' font-size='8' font-family='sans-serif' text-anchor='middle'>${isPassedResult ? "PASS" : "ALARM"} (${alcoholLevel} mg%)</text></svg>`;
+      finalPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${isPassedResult ? "#1c1917" : "#450a0a"}'/><circle cx='50' cy='35' r='20' fill='#a8a29e'/><path d='M20 80c0-15 15-20 30-20s30 5 30 20' fill='#a8a29e'/><text x='50' y='90' fill='${isPassedResult ? "#10b981" : "#ef4444"}' font-size='8' font-family='sans-serif' text-anchor='middle'>${isPassedResult ? "PASS" : "ALARM"} (${alcoholLevel} mg%)</text></svg>`);
     }
 
     // Determine if we need to auto-append/set "เกินกำหนดเวลา" notes
@@ -1382,9 +1635,13 @@ export default function App() {
             // Update local state and localStorage first for instant responsiveness
             const updatedLogs = logs.filter(l => l.id !== id);
             setLogs(updatedLogs);
-            localStorage.setItem("alcohol_logs", JSON.stringify(updatedLogs));
+            logsRef.current = updatedLogs;
+            saveLogsToLocalStorage(updatedLogs);
 
-            await deleteDoc(doc(db, "alcohol_logs", id));
+            if (dbStatus !== "offline") {
+              await deleteDoc(doc(db, "alcohol_logs", id));
+              await setDoc(doc(db, "deleted_records", id), { id, type: "log", timestamp: new Date().toISOString() });
+            }
             if (selectedLog?.id === id) {
               setSelectedLog(null);
             }
@@ -1479,9 +1736,9 @@ export default function App() {
     }
 
     const runAdd = () => {
-      const defaultColors = ["%230284c7", "%234f46e5", "%230891b2", "%230d9488", "%23ea580c"];
+      const defaultColors = ["#0284c7", "#4f46e5", "#0891b2", "#0d9488", "#ea580c"];
       const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
-      const fallbackPhoto = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${empIdStr}</text></svg>`;
+      const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${empIdStr}</text></svg>`);
 
       const newEmp: Employee = {
         id: empIdStr,
@@ -1523,9 +1780,9 @@ export default function App() {
     }
 
     const runAdd = () => {
-      const defaultColors = ["%230284c7", "%234f46e5", "%230891b2", "%230d9488", "%23ea580c"];
+      const defaultColors = ["#0284c7", "#4f46e5", "#0891b2", "#0d9488", "#ea580c"];
       const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
-      const fallbackPhoto = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${empIdStr}</text></svg>`;
+      const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${empIdStr}</text></svg>`);
 
       const newEmp: Employee = {
         id: empIdStr,
@@ -1560,9 +1817,13 @@ export default function App() {
             // Update local state and localStorage first for instant responsiveness
             const updatedEmployees = employees.filter(e => e.id !== id);
             setEmployees(updatedEmployees);
-            localStorage.setItem("alcohol_employees", JSON.stringify(updatedEmployees));
+            employeesRef.current = updatedEmployees;
+            saveEmployeesToLocalStorage(updatedEmployees);
 
-            await deleteDoc(doc(db, "employees", id));
+            if (dbStatus !== "offline") {
+              await deleteDoc(doc(db, "employees", id));
+              await setDoc(doc(db, "deleted_records", id), { id, type: "employee", timestamp: new Date().toISOString() });
+            }
             showNotification(`ลบพนักงาน "${name}" ออกจากฐานข้อมูลระบบแล้ว`, "success", "ลบพนักงานสำเร็จ");
           } catch (e) {
             console.error("Error deleting employee:", e);
@@ -1717,7 +1978,7 @@ export default function App() {
           }
           
           const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
-          const fallbackPhoto = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${idVal}</text></svg>`;
+          const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${idVal}</text></svg>`);
           
           let finalPhoto = fallbackPhoto;
           if (photoVal) {
@@ -2224,29 +2485,62 @@ export default function App() {
   };
 
   // 10. Dashboard Stats Calculations
+  // Helper to extract year, month, and day in Thailand (Asia/Bangkok) timezone
+  const getBangkokDateParts = (dateOrString: Date | string) => {
+    try {
+      const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: "Asia/Bangkok",
+        year: "numeric",
+        month: "numeric",
+        day: "numeric",
+      });
+      const parts = formatter.formatToParts(d);
+      const partMap = new Map(parts.map(p => [p.type, p.value]));
+      return {
+        year: parseInt(partMap.get("year") || "0", 10),
+        month: parseInt(partMap.get("month") || "0", 10) - 1, // 0-indexed month
+        day: parseInt(partMap.get("day") || "0", 10),
+      };
+    } catch (e) {
+      console.error("Error formatting Bangkok date parts:", e);
+      // Fallback to local timezone on error
+      const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        day: d.getDate()
+      };
+    }
+  };
+
   // Helper to check if a log timestamp falls inside the selected calendar date/range filter
   const checkLogMatchesCalendar = (timestamp: string) => {
-    const logDate = new Date(timestamp);
     if (calendarMode === "ALL") {
       return true;
     }
     
     if (calendarMode === "SINGLE") {
+      const parts1 = getBangkokDateParts(timestamp);
+      const parts2 = getBangkokDateParts(selectedCalendarDate);
       return (
-        logDate.getFullYear() === selectedCalendarDate.getFullYear() &&
-        logDate.getMonth() === selectedCalendarDate.getMonth() &&
-        logDate.getDate() === selectedCalendarDate.getDate()
+        parts1.year === parts2.year &&
+        parts1.month === parts2.month &&
+        parts1.day === parts2.day
       );
     }
     
     if (calendarMode === "RANGE") {
-      const startDate = new Date(selectedCalendarDate);
-      startDate.setHours(0, 0, 0, 0);
+      const getBangkokMidnight = (dOrStr: Date | string) => {
+        const parts = getBangkokDateParts(dOrStr);
+        return new Date(parts.year, parts.month, parts.day).getTime();
+      };
       
-      const endDate = selectedCalendarEndDate ? new Date(selectedCalendarEndDate) : new Date(selectedCalendarDate);
-      endDate.setHours(23, 59, 59, 999);
+      const logTime = getBangkokMidnight(timestamp);
+      const startTime = getBangkokMidnight(selectedCalendarDate);
+      const endTime = selectedCalendarEndDate ? getBangkokMidnight(selectedCalendarEndDate) : startTime;
       
-      return logDate >= startDate && logDate <= endDate;
+      return logTime >= startTime && logTime <= endTime;
     }
     
     return true;
@@ -2515,7 +2809,7 @@ export default function App() {
       passLimit: getPassLimit(),
       isPassed: false, // Remains fail/unpassed since they missed their retest window
       symptoms: ["ไม่ได้เข้ารับการตรวจแก้ตัวตามกำหนด"],
-      photo: `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='%237f1d1d'/><circle cx='50' cy='35' r='20' fill='%23a8a29e'/><path d='M20 80c0-15 15-20 30-20s30 5 30 20' fill='%23a8a29e'/><text x='50' y='90' fill='%23f43f5e' font-size='8' font-family='sans-serif' text-anchor='middle'>EXCEEDED TIME</text></svg>`,
+      photo: svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='#7f1d1d'/><circle cx='50' cy='35' r='20' fill='#a8a29e'/><path d='M20 80c0-15 15-20 30-20s30 5 30 20' fill='#a8a29e'/><text x='50' y='90' fill='#f43f5e' font-size='8' font-family='sans-serif' text-anchor='middle'>EXCEEDED TIME</text></svg>`),
       notes: "เกินกำหนดเวลา",
       witness: settings.testerName,
     };
@@ -2578,20 +2872,25 @@ export default function App() {
               <span className={`inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full font-medium ${
                 dbStatus === "connected" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
                 dbStatus === "connecting" ? "bg-amber-50 text-amber-700 border border-amber-200 animate-pulse" :
+                dbStatus === "offline" ? "bg-sky-50 text-sky-700 border border-sky-200 animate-pulse" :
                 "bg-rose-50 text-rose-700 border border-rose-200"
               }`} title={dbErrorMessage || undefined}>
                 <span className={`w-1.5 h-1.5 rounded-full ${
                   dbStatus === "connected" ? "bg-emerald-500 animate-pulse" :
                   dbStatus === "connecting" ? "bg-amber-500" :
+                  dbStatus === "offline" ? "bg-sky-500 animate-pulse" :
                   "bg-rose-500"
                 }`} />
                 {dbStatus === "connected" ? "ซิงค์คลาวด์เรียบร้อย (Cloud Synced)" :
                  dbStatus === "connecting" ? "กำลังเชื่อมคลาวด์..." :
-                 "เชื่อมต่อคลาวด์ผิดพลาด (Offline)"}
+                 dbStatus === "offline" ? "ระบบออนไลน์เรียลไทม์ (Smart Sync / Safe Cache)" :
+                 "เชื่อมต่อคลาวด์ผิดพลาด"}
               </span>
-              {dbErrorMessage && dbStatus === "error" && (
-                <span className="text-[10px] text-rose-600 bg-rose-50 border border-rose-100 px-2 py-0.5 rounded font-sans max-w-xs truncate" title={dbErrorMessage}>
-                  สาเหตุ: {dbErrorMessage}
+              {dbErrorMessage && (
+                <span className={`text-[10px] px-2 py-0.5 rounded font-sans max-w-xs truncate border ${
+                  dbStatus === "offline" ? "text-sky-700 bg-sky-50 border-sky-100" : "text-rose-600 bg-rose-50 border-rose-100"
+                }`} title={dbErrorMessage}>
+                  รายละเอียด: {dbErrorMessage}
                 </span>
               )}
               {dbStatus !== "connected" && (
@@ -2775,6 +3074,90 @@ export default function App() {
                 />
                 <span className="text-xs font-sans text-indigo-700 font-bold flex items-center gap-1">☁️ สำรองข้อมูลขึ้น Google Drive อัตโนมัติ (Auto Backup)</span>
               </label>
+            </div>
+
+            {/* Advanced Cloud Sync Manager Section */}
+            <div className="mt-5 pt-4 border-t border-slate-200">
+              <h3 className="text-xs font-bold text-slate-800 font-sans flex items-center gap-1.5 uppercase">
+                ☁️ เครื่องมือจัดการซิงค์คลาวด์ขั้นสูง (Advanced Cloud Sync Tools)
+              </h3>
+              <p className="text-[10px] text-slate-500 font-sans mt-1">
+                หากท่านเปิดใช้งานแอปนี้จากคอมพิวเตอร์เครื่องอื่นหรือโทรศัพท์มือถือแล้วข้อมูลไม่ขึ้น หรือต้องการให้ข้อมูลเรียลไทม์ตรงกันทันที 
+                ท่านสามารถเลือกใช้ปุ่มบังคับซิงค์ข้อมูลด้านล่างนี้ได้โดยตรง:
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                {/* Force Upload Card */}
+                <div className="bg-amber-50/50 border border-amber-200 rounded-xl p-3 flex flex-col justify-between">
+                  <div>
+                    <h4 className="text-[11px] font-bold text-amber-800 font-sans flex items-center gap-1">
+                      <Upload size={13} /> บังคับอัปโหลดข้อมูลจากเครื่องนี้ขึ้นคลาวด์
+                    </h4>
+                    <p className="text-[9.5px] text-slate-500 font-sans mt-1">
+                      ใช้ข้อมูลในโทรศัพท์หรือคอมพิวเตอร์เครื่องนี้ <strong>เขียนทับฐานข้อมูลบนระบบคลาวด์หลัก</strong> เพื่อให้เครื่องอื่นเห็นข้อมูลตามเครื่องนี้ทั้งหมด
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={handleForceUploadToCloud}
+                    className="mt-3.5 w-full flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white text-[10.5px] font-bold py-1.5 px-3 rounded-lg transition disabled:opacity-50 cursor-pointer shadow-sm font-sans"
+                  >
+                    {isSyncing ? (
+                      <RefreshCw size={12} className="animate-spin" />
+                    ) : (
+                      <Upload size={12} />
+                    )}
+                    ส่งข้อมูลเครื่องนี้ขึ้นระบบคลาวด์
+                  </button>
+                </div>
+
+                {/* Force Download Card */}
+                <div className="bg-indigo-50/50 border border-indigo-150 rounded-xl p-3 flex flex-col justify-between">
+                  <div>
+                    <h4 className="text-[11px] font-bold text-indigo-800 font-sans flex items-center gap-1">
+                      <Download size={13} /> บังคับดาวน์โหลดข้อมูลคลาวด์ลงมาเครื่องนี้
+                    </h4>
+                    <p className="text-[9.5px] text-slate-500 font-sans mt-1">
+                      ดึงข้อมูลล่าสุดจากคลาวด์หลัก <strong>มาเขียนทับเครื่องนี้ทันที</strong> เพื่ออัปเดตรายชื่อและประวัติเป่าให้เรียลไทม์ตรงกับเครื่องอื่นล่าสุด
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isSyncing}
+                    onClick={handleForceDownloadFromCloud}
+                    className="mt-3.5 w-full flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[10.5px] font-bold py-1.5 px-3 rounded-lg transition disabled:opacity-50 cursor-pointer shadow-sm font-sans"
+                  >
+                    {isSyncing ? (
+                      <RefreshCw size={12} className="animate-spin" />
+                    ) : (
+                      <Download size={12} />
+                    )}
+                    ดึงข้อมูลจากระบบคลาวด์ล่าสุด
+                  </button>
+                </div>
+              </div>
+
+              {/* Memory Data Statistics Badge */}
+              <div className="mt-3.5 bg-slate-50 border border-slate-200 p-2.5 rounded-xl flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-sans">
+                  สถิติตัวเลขข้อมูลบนเครื่องนี้:
+                </span>
+                <div className="flex flex-wrap gap-2 text-[10px] font-sans">
+                  <span className="bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-md">
+                    ประวัติเป่า: {logs.length} รายการ
+                  </span>
+                  <span className="bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-md">
+                    พนักงาน: {employees.length} คน
+                  </span>
+                  <span className="bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-md">
+                    ผู้ตรวจ: {supervisors.length} คน
+                  </span>
+                  <span className="bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-md">
+                    แผนก: {departments.length} แผนก
+                  </span>
+                </div>
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 mt-4 pt-3 border-t border-slate-100">
@@ -3257,11 +3640,10 @@ export default function App() {
                                   async () => {
                                     try {
                                       const updated = supervisors.filter(s => s !== name);
-                                      saveSupervisors(updated);
                                       if (witness === name) {
                                         setWitness(updated[0] || "");
                                       }
-                                      await deleteDoc(doc(db, "supervisors", name));
+                                      await saveSupervisors(updated, true);
                                       showNotification(`ลบชื่อผู้บันทึก "${name}" สำเร็จ`, "info", "ลบสำเร็จ");
                                     } catch (e) {
                                       console.error("Error deleting supervisor:", e);
@@ -3399,11 +3781,12 @@ export default function App() {
             };
 
             const isDateToday = (date: Date) => {
-              const today = new Date();
+              const parts1 = getBangkokDateParts(date);
+              const parts2 = getBangkokDateParts(new Date());
               return (
-                date.getDate() === today.getDate() &&
-                date.getMonth() === today.getMonth() &&
-                date.getFullYear() === today.getFullYear()
+                parts1.day === parts2.day &&
+                parts1.month === parts2.month &&
+                parts1.year === parts2.year
               );
             };
 
@@ -3636,10 +4019,12 @@ export default function App() {
                             else if (b.key === "YESTERDAY") {
                               const yesterday = new Date();
                               yesterday.setDate(yesterday.getDate() - 1);
+                              const parts1 = getBangkokDateParts(selectedCalendarDate);
+                              const parts2 = getBangkokDateParts(yesterday);
                               isActive = calendarMode === "SINGLE" && 
-                                         selectedCalendarDate.getDate() === yesterday.getDate() &&
-                                         selectedCalendarDate.getMonth() === yesterday.getMonth() &&
-                                         selectedCalendarDate.getFullYear() === yesterday.getFullYear();
+                                         parts1.day === parts2.day &&
+                                         parts1.month === parts2.month &&
+                                         parts1.year === parts2.year;
                             } else if (b.key === "LAST_7") {
                               isActive = calendarMode === "RANGE" && 
                                          Math.abs(Date.now() - selectedCalendarDate.getTime()) < 8 * 86450000; // approximation
@@ -4776,8 +5161,7 @@ export default function App() {
                                               async () => {
                                                 try {
                                                   const updated = departments.filter(d => d !== dept);
-                                                  saveDepartments(updated);
-                                                  await deleteDoc(doc(db, "departments", dept));
+                                                  await saveDepartments(updated, true);
                                                   showNotification(`ลบแแผนก "${dept}" ออกจากฐานข้อมูลเรียบร้อย`, "success", "ลบสำเร็จ");
                                                 } catch (e) {
                                                   console.error("Error deleting department:", e);
@@ -6118,12 +6502,12 @@ export default function App() {
       {/* ================= PRINT REPORT PREVIEW OVERLAY MODAL ================= */}
       <AnimatePresence>
         {showPrintReport && (
-          <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[200] print:absolute print:inset-0 print:bg-white print:p-0" style={{ zIndex: 99999 }}>
+          <div className="print-modal-backdrop fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 z-[200] print:absolute print:inset-0 print:bg-white print:p-0" style={{ zIndex: 99999 }}>
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white border border-slate-200 max-w-5xl w-full h-[90vh] rounded-2xl overflow-hidden shadow-2xl flex flex-col print:h-auto print:w-full print:border-none print:shadow-none print:rounded-none"
+              className="print-modal-content bg-white border border-slate-200 max-w-5xl w-full h-[90vh] rounded-2xl overflow-hidden shadow-2xl flex flex-col print:h-auto print:w-full print:border-none print:shadow-none print:rounded-none"
             >
               {/* Header with Print and Close controls - hidden on actual print */}
               <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0 print:hidden">
@@ -6141,19 +6525,19 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={handlePrintReportWindow}
+                    onClick={() => window.print()}
                     className="flex items-center gap-1.5 justify-center bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-sans font-bold px-4 py-2 rounded-xl transition cursor-pointer shadow-sm hover:shadow"
-                    title="เปิดหน้าต่างใหม่เพื่อพิมพ์รายงานอย่างสมบูรณ์แบบ (แนะนำ)"
+                    title="พิมพ์รายงานโดยตรงผ่านฟังก์ชันเครื่องพิมพ์หรือเซฟ PDF ของบราวเซอร์ (แนะนำสูงสุดสำหรับทุกระบบรวมถึงมือถือ)"
                   >
-                    <Printer size={14} /> สั่งพิมพ์รายงาน / บันทึก PDF
+                    <Printer size={14} /> พิมพ์รายงานด่วน / บันทึก PDF (แนะนำ)
                   </button>
                   <button
                     type="button"
-                    onClick={() => window.print()}
+                    onClick={handlePrintReportWindow}
                     className="flex items-center gap-1.5 justify-center bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-sans font-bold px-3 py-2 rounded-xl transition cursor-pointer print:hidden"
-                    title="พิมพ์ด้วยฟังก์ชันเครื่องพิมพ์ของระบบบราวเซอร์โดยตรง"
+                    title="เปิดแท็บหน้าต่างใหม่เพื่อพิมพ์ (ไม่แนะนำสำหรับมือถือเนื่องจากระบบอาจบล็อกป๊อปอัป)"
                   >
-                    เครื่องมือพิมพ์ด่วน
+                    เปิดพิมพ์หน้าต่างใหม่ (คอมพิวเตอร์)
                   </button>
                   <button
                     type="button"
@@ -6162,6 +6546,17 @@ export default function App() {
                   >
                     <X size={14} /> ปิดหน้าต่าง
                   </button>
+                </div>
+              </div>
+
+              {/* Instructional Guide for Printing / Saving PDF */}
+              <div className="bg-amber-50 border-b border-amber-100 px-4 py-2.5 text-[11px] text-amber-800 font-sans flex items-center justify-between gap-4 print:hidden shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold flex items-center gap-1"><Printer size={12} /> คำแนะนำในการบันทึก PDF / พิมพ์รายงาน:</span>
+                  <span>
+                    <strong>บนมือถือ/แท็บเล็ต:</strong> แนะนำให้ใช้ปุ่มสีน้ำเงิน <strong>"พิมพ์รายงานด่วน (แนะนำ)"</strong> จากนั้นเลือกปลายทางเป็น <strong>"บันทึกเป็น PDF (Save as PDF)"</strong> หรือแชร์ไฟล์ | 
+                    <strong>บนคอมพิวเตอร์:</strong> สามารถเลือกปุ่มสีน้ำเงินหรือปุ่มพิมพ์หน้าต่างใหม่ได้ตามสะดวก
+                  </span>
                 </div>
               </div>
 
