@@ -1956,17 +1956,6 @@ export default function App() {
             idVal = `EMP-${Math.floor(100000 + Math.random() * 900000)}`;
           }
           
-          // Check if employee with this ID or Name already exists in our database (ซ้ำ)
-          const isExisting = employees.some(
-            emp => (idVal && emp.id.trim().toLowerCase() === idVal.trim().toLowerCase()) ||
-                   emp.name.trim().toLowerCase() === nameVal.trim().toLowerCase()
-          );
-          
-          if (isExisting) {
-            skippedDuplicateCount++;
-            continue; // Skip duplicate name or ID from database
-          }
-          
           // Check if already in tempParsed (to avoid duplicate entries in the excel sheet itself)
           const isDuplicateInExcel = tempParsed.some(
             emp => (idVal && emp.id.trim().toLowerCase() === idVal.trim().toLowerCase()) ||
@@ -2004,7 +1993,7 @@ export default function App() {
         
         if (tempParsed.length === 0) {
           if (skippedDuplicateCount > 0) {
-            setExcelFileError(`ไม่พบรายชื่อใหม่ในไฟล์ (พนักงานทั้งหมดจำนวน ${skippedDuplicateCount} คนมีรายชื่อซ้ำในระบบแล้ว)`);
+            setExcelFileError(`ไม่พบรายชื่อในไฟล์ หรือรายชื่อทั้งหมดซ้ำซ้อนภายในไฟล์เอง`);
           } else {
             setExcelFileError("ไม่สามารถจับคู่หัวตารางข้อมูลในไฟล์ได้ กรุณาใช้แบบฟอร์มตัวอย่าง");
           }
@@ -2014,7 +2003,7 @@ export default function App() {
         setParsedEmployees(tempParsed);
         setShowExcelPreview(true);
         if (skippedDuplicateCount > 0) {
-          showNotification(`อ่านไฟล์พนักงานสำเร็จ พบรายชื่อใหม่ทั้งหมด ${tempParsed.length} คน (กรองรายชื่อที่ซ้ำในระบบออกจำนวน ${skippedDuplicateCount} คน)`, "info", "อ่านไฟล์สำเร็จ");
+          showNotification(`อ่านไฟล์พนักงานสำเร็จ พบทั้งหมด ${tempParsed.length} คน (ข้ามรายชื่อที่ซ้ำกันในไฟล์ ${skippedDuplicateCount} คน)`, "info", "อ่านไฟล์สำเร็จ");
         } else {
           showNotification(`อ่านไฟล์พนักงานเรียบร้อย พบทั้งหมด ${tempParsed.length} คน`, "info", "อ่านไฟล์สำเร็จ");
         }
@@ -2035,6 +2024,7 @@ export default function App() {
       let updated = [...employees];
       const newDepts = [...departments];
       let addedCount = 0;
+      let updatedCount = 0;
       let skippedCount = 0;
       
       parsedEmployees.forEach(newEmp => {
@@ -2047,7 +2037,20 @@ export default function App() {
           emp.name.trim().toLowerCase() === newEmp.name.trim().toLowerCase()
         );
         if (existingIdx >= 0) {
-          skippedCount++;
+          if (importOption === "OVERWRITE") {
+            const existingEmp = updated[existingIdx];
+            updated[existingIdx] = {
+              ...existingEmp,
+              name: newEmp.name || existingEmp.name,
+              department: newEmp.department || existingEmp.department,
+              role: newEmp.role || existingEmp.role,
+              photo: newEmp.photo && !newEmp.photo.startsWith("data:image/svg+xml") ? newEmp.photo : existingEmp.photo,
+              updatedAt: new Date().toISOString()
+            };
+            updatedCount++;
+          } else {
+            skippedCount++;
+          }
         } else {
           updated.push(newEmp);
           addedCount++;
@@ -2060,8 +2063,12 @@ export default function App() {
       setParsedEmployees([]);
       setShowExcelPreview(false);
       
-      let summaryStr = `นำเข้าพนักงานเรียบร้อย: เพิ่มใหม่ ${addedCount} คน`;
-      if (skippedCount > 0) summaryStr += `, ละเว้นรายชื่อซ้ำ ${skippedCount} คน`;
+      let summaryParts = [];
+      if (addedCount > 0) summaryParts.push(`เพิ่มใหม่ ${addedCount} คน`);
+      if (updatedCount > 0) summaryParts.push(`อัปเดตข้อมูลเดิม ${updatedCount} คน`);
+      if (skippedCount > 0) summaryParts.push(`ละเว้น/ข้าม ${skippedCount} คน`);
+      
+      let summaryStr = `นำเข้าพนักงานเรียบร้อย: ` + (summaryParts.length > 0 ? summaryParts.join(", ") : "ไม่มีการเปลี่ยนแปลง");
       
       showNotification(summaryStr, "success", "นำเข้าข้อมูลสำเร็จ");
     };
