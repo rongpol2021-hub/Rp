@@ -31,7 +31,7 @@ body {
 /* Print CSS formatting rules */
 @media print {
   /* Hide all other elements in root except the print modal backdrop */
-  #root > *:not(.print-modal-backdrop),
+  #main-applet-root > *:not(.print-modal-backdrop),
   header,
   main,
   footer,
@@ -50,6 +50,17 @@ body {
     padding: 0 !important;
     width: 100% !important;
     height: auto !important;
+    overflow: visible !important;
+  }
+
+  #main-applet-root {
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
     overflow: visible !important;
   }
 
@@ -84,7 +95,6 @@ body {
   /* Show only the print-area element */
   #print-area, #print-area * {
     visibility: visible !important;
-    display: block;
   }
 
   /* Force print area to take up entire paper canvas and remove page absolute offsets */
