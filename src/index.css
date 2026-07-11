@@ -31,6 +31,7 @@ body {
 /* Print CSS formatting rules */
 @media print {
   /* Hide all other elements in root except the print modal backdrop */
+  #root > *:not(.print-modal-backdrop),
   #main-applet-root > *:not(.print-modal-backdrop),
   header,
   main,
@@ -53,7 +54,7 @@ body {
     overflow: visible !important;
   }
 
-  #main-applet-root {
+  #root, #main-applet-root {
     background: white !important;
     padding: 0 !important;
     margin: 0 !important;

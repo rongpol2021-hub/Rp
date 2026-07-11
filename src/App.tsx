@@ -1044,7 +1044,10 @@ export default function App() {
           const old = oldLogsMap.get(l.id);
           return !old || JSON.stringify(old) !== JSON.stringify(l);
         })
-        .map(l => setDoc(doc(db, "alcohol_logs", l.id), JSON.parse(JSON.stringify(l))));
+        .flatMap(l => [
+          setDoc(doc(db, "alcohol_logs", l.id), JSON.parse(JSON.stringify(l))),
+          deleteDoc(doc(db, "deleted_records", l.id))
+        ]);
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
@@ -1092,7 +1095,10 @@ export default function App() {
           const old = oldEmpMap.get(e.id);
           return !old || JSON.stringify(old) !== JSON.stringify(e);
         })
-        .map(e => setDoc(doc(db, "employees", e.id), JSON.parse(JSON.stringify(e))));
+        .flatMap(e => [
+          setDoc(doc(db, "employees", e.id), JSON.parse(JSON.stringify(e))),
+          deleteDoc(doc(db, "deleted_records", e.id))
+        ]);
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
@@ -1122,7 +1128,10 @@ export default function App() {
 
       const savePromises = updatedSupervisors
         .filter(name => !oldSet.has(name))
-        .map(name => setDoc(doc(db, "supervisors", name), { name }));
+        .flatMap(name => [
+          setDoc(doc(db, "supervisors", name), { name }),
+          deleteDoc(doc(db, "deleted_records", name))
+        ]);
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
@@ -1152,7 +1161,10 @@ export default function App() {
 
       const savePromises = updatedDepartments
         .filter(name => !oldSet.has(name))
-        .map(name => setDoc(doc(db, "departments", name), { name }));
+        .flatMap(name => [
+          setDoc(doc(db, "departments", name), { name }),
+          deleteDoc(doc(db, "deleted_records", name))
+        ]);
 
       await Promise.all([...deletePromises, ...savePromises]);
     } catch (e) {
@@ -1936,8 +1948,19 @@ export default function App() {
           }
           
           if (!nameVal) {
-            const values = Object.values(row);
-            if (values.length >= 1) nameVal = String(values[1] || "").trim();
+            const values = Object.values(row).map(v => String(v || "").trim()).filter(Boolean);
+            if (values.length === 1) {
+              nameVal = values[0];
+            } else if (values.length > 1) {
+              const potentialName = values.find(v => 
+                v !== idVal && 
+                v !== deptVal && 
+                v !== roleVal && 
+                isNaN(Number(v)) && 
+                v.length >= 2
+              );
+              nameVal = potentialName || values.find(v => v !== idVal) || values[0];
+            }
           }
           
           if (!nameVal) {
@@ -2490,6 +2513,23 @@ export default function App() {
       </html>
     `);
     printWindow.document.close();
+  };
+
+  // Unified print handler that ensures high compatibility inside and outside of iframes
+  const handleDirectPrint = () => {
+    // If inside an iframe (such as the AI Studio preview environment), direct window.print() is blocked or behaves incorrectly.
+    // In that case, we automatically delegate to opening a clean print window to bypass sandbox constraints.
+    const isIframe = window.self !== window.top;
+    if (isIframe) {
+      handlePrintReportWindow();
+    } else {
+      try {
+        window.print();
+      } catch (err) {
+        console.error("Direct print failed, falling back to window print:", err);
+        handlePrintReportWindow();
+      }
+    }
   };
 
   // 10. Dashboard Stats Calculations
@@ -6533,9 +6573,9 @@ export default function App() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => window.print()}
+                    onClick={handleDirectPrint}
                     className="flex items-center gap-1.5 justify-center bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white text-xs font-sans font-bold px-4 py-2 rounded-xl transition cursor-pointer shadow-sm hover:shadow"
-                    title="พิมพ์รายงานโดยตรงผ่านฟังก์ชันเครื่องพิมพ์หรือเซฟ PDF ของบราวเซอร์ (แนะนำสูงสุดสำหรับทุกระบบรวมถึงมือถือ)"
+                    title="พิมพ์รายงานโดยตรงหรือเปิดแท็บพิมพ์แบบความเข้ากันได้สูงที่ข้ามข้อจำกัดของ iFrame สะดวกทั้งมือถือและคอมพิวเตอร์"
                   >
                     <Printer size={14} /> พิมพ์รายงานด่วน / บันทึก PDF (แนะนำ)
                   </button>
