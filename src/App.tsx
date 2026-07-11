@@ -1889,13 +1889,14 @@ export default function App() {
     
     reader.onload = (event) => {
       try {
-        const data = event.target?.result;
-        if (!data) {
+        const result = event.target?.result;
+        if (!result) {
           setExcelFileError("ไม่สามารถอ่านข้อมูลจากไฟล์ได้");
           return;
         }
         
-        const workbook = XLSX.read(data, { type: "binary" });
+        const data = new Uint8Array(result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: "array" });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
@@ -2023,7 +2024,7 @@ export default function App() {
       }
     };
     
-    reader.readAsBinaryString(file);
+    reader.readAsArrayBuffer(file);
     e.target.value = "";
   };
 
