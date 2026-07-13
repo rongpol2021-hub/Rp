@@ -91,6 +91,57 @@ const svgToBase64 = (svgString: string): string => {
   }
 };
 
+// Helper to extract year, month, and day in Thailand (Asia/Bangkok) timezone
+const getBangkokDateParts = (dateOrString: Date | string) => {
+  try {
+    const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Bangkok",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+    });
+    const parts = formatter.formatToParts(d);
+    const partMap = new Map(parts.map(p => [p.type, p.value]));
+    return {
+      year: parseInt(partMap.get("year") || "0", 10),
+      month: parseInt(partMap.get("month") || "0", 10) - 1, // 0-indexed month
+      day: parseInt(partMap.get("day") || "0", 10),
+    };
+  } catch (e) {
+    console.error("Error formatting Bangkok date parts:", e);
+    const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
+    return {
+      year: d.getFullYear(),
+      month: d.getMonth(),
+      day: d.getDate()
+    };
+  }
+};
+
+// Helper to check if a date is today in Bangkok timezone
+const isDateToday = (date: Date) => {
+  const parts1 = getBangkokDateParts(date);
+  const parts2 = getBangkokDateParts(new Date());
+  return (
+    parts1.day === parts2.day &&
+    parts1.month === parts2.month &&
+    parts1.year === parts2.year
+  );
+};
+
+// Helper to check if a date is yesterday in Bangkok timezone
+const isDateYesterday = (date: Date) => {
+  const parts1 = getBangkokDateParts(date);
+  const yesterdayBangkok = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const parts2 = getBangkokDateParts(yesterdayBangkok);
+  return (
+    parts1.day === parts2.day &&
+    parts1.month === parts2.month &&
+    parts1.year === parts2.year
+  );
+};
+
 export default function App() {
   // 1. Core State
   const [logs, setLogs] = useState<AlcoholTestLog[]>(() => {
@@ -145,7 +196,9 @@ export default function App() {
       if (currentSessionId && lastFailedTime !== null) {
         const lastFailedDate = new Date(lastFailedTime);
         const currentDate = new Date(lTime);
-        const isSameDay = lastFailedDate.toDateString() === currentDate.toDateString();
+        const parts1 = getBangkokDateParts(lastFailedDate);
+        const parts2 = getBangkokDateParts(currentDate);
+        const isSameDay = parts1.year === parts2.year && parts1.month === parts2.month && parts1.day === parts2.day;
 
         // If within the grace period OR on the same day, continue the attempt count from the latest
         if (lTime - lastFailedTime <= gracePeriodMs || isSameDay) {
@@ -376,6 +429,7 @@ export default function App() {
   const departmentsRef = useRef<string[]>([]);
 
   const deletedRecordsRef = useRef<Map<string, string>>(new Map());
+  const lastSystemDateRef = useRef<Date>(new Date());
 
   // Load initial deleted records cache from localStorage
   useEffect(() => {
@@ -388,19 +442,35 @@ export default function App() {
     }
   }, []);
 
-  // Helper to save logs safely to localStorage to prevent QuotaExceededError
+  // Helper to save logs safely to localStorage by stripping base64 photos/signatures on older items to prevent QuotaExceededError
   const saveLogsToLocalStorage = (logsList: AlcoholTestLog[]) => {
     try {
-      // Sort and keep only the latest 50 logs for localStorage cache to prevent QuotaExceededError
+      // Sort and keep only the latest 1000 logs for localStorage cache to prevent QuotaExceededError
       const sorted = [...logsList].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      const prunedLogs = sorted.slice(0, 50);
+      
+      // Keep up to 20 full logs (with photo/signature) and strip photo/signature for any older ones
+      const processedLogs = sorted.map((log, idx) => {
+        if (idx >= 20) {
+          if (log.photo || log.signature) {
+            return {
+              ...log,
+              photo: undefined,
+              signature: undefined
+            };
+          }
+        }
+        return log;
+      });
+
+      const prunedLogs = processedLogs.slice(0, 1000);
       localStorage.setItem("alcohol_logs", JSON.stringify(prunedLogs));
     } catch (error) {
       console.warn("Failed to write logs to localStorage (QuotaExceededError). Retrying with fewer items...", error);
       try {
         const sorted = [...logsList].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-        const prunedLogs = sorted.slice(0, 20);
-        localStorage.setItem("alcohol_logs", JSON.stringify(prunedLogs));
+        // If still failing, strip photos from ALL logs and keep latest 100 text logs
+        const strippedLogs = sorted.map(log => ({ ...log, photo: undefined, signature: undefined })).slice(0, 100);
+        localStorage.setItem("alcohol_logs", JSON.stringify(strippedLogs));
       } catch (e2) {
         console.error("Critical failure: localStorage is completely full.", e2);
       }
@@ -706,6 +776,13 @@ export default function App() {
 
         // 1. Logs
         const unsubLogs = onSnapshot(collection(db, "alcohol_logs"), (snapshot) => {
+          // If empty but from cache, it's just a transient offline/connecting state. Skip state reset.
+          if (snapshot.empty && snapshot.metadata.fromCache) {
+            console.log("Logs snapshot is empty from local cache, waiting for server...");
+            checkAllLoaded("logs");
+            return;
+          }
+
           const fetchedLogs: AlcoholTestLog[] = [];
           snapshot.forEach((docSnap) => {
             fetchedLogs.push(docSnap.data() as AlcoholTestLog);
@@ -743,10 +820,38 @@ export default function App() {
             // Filter out deleted items
             const activeFetched = fetchedLogs.filter(l => !(deletedRecordsRef.current.has(l.id) && deletedRecordsRef.current.get(l.id) === "log"));
 
-            activeFetched.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            logsRef.current = activeFetched;
-            setLogs(activeFetched);
-            saveLogsToLocalStorage(activeFetched);
+            // Bi-directional merge of logs
+            const mergedMap = new Map<string, AlcoholTestLog>();
+            activeFetched.forEach(log => mergedMap.set(log.id, log));
+
+            const uploadPromises: Promise<void>[] = [];
+            // Merge with current in-memory logs to prevent losing newly pulled/sync logs
+            const baseLocalLogs = logsRef.current.length > 0 ? logsRef.current : localLogs;
+
+            baseLocalLogs.forEach(localLog => {
+              if (deletedRecordsRef.current.has(localLog.id) && deletedRecordsRef.current.get(localLog.id) === "log") {
+                return;
+              }
+              if (!mergedMap.has(localLog.id)) {
+                // Local log exists but not in cloud. Keep it and upload!
+                mergedMap.set(localLog.id, localLog);
+                uploadPromises.push(
+                  setDoc(doc(db, "alcohol_logs", localLog.id), JSON.parse(JSON.stringify(localLog))).catch(err => {
+                    console.error("Error uploading local-only log during sync:", err);
+                  })
+                );
+              }
+            });
+
+            const finalMergedLogs = Array.from(mergedMap.values());
+            finalMergedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            logsRef.current = finalMergedLogs;
+            setLogs(finalMergedLogs);
+            saveLogsToLocalStorage(finalMergedLogs);
+
+            if (uploadPromises.length > 0) {
+              Promise.all(uploadPromises).catch(err => console.error("Error in batch log upload:", err));
+            }
           }
           
           checkAllLoaded("logs");
@@ -755,6 +860,13 @@ export default function App() {
 
         // 2. Employees
         const unsubEmployees = onSnapshot(collection(db, "employees"), (snapshot) => {
+          // If empty but from cache, it's just a transient offline/connecting state. Skip state reset.
+          if (snapshot.empty && snapshot.metadata.fromCache) {
+            console.log("Employees snapshot is empty from local cache, waiting for server...");
+            checkAllLoaded("employees");
+            return;
+          }
+
           const fetchedEmployees: Employee[] = [];
           snapshot.forEach((docSnap) => {
             fetchedEmployees.push(docSnap.data() as Employee);
@@ -791,9 +903,50 @@ export default function App() {
 
             const activeFetched = fetchedEmployees.filter(e => !(deletedRecordsRef.current.has(e.id) && deletedRecordsRef.current.get(e.id) === "employee"));
 
-            employeesRef.current = activeFetched;
-            setEmployees(activeFetched);
-            saveEmployeesToLocalStorage(activeFetched);
+            // Bi-directional merge of employees
+            const mergedMap = new Map<string, Employee>();
+            activeFetched.forEach(emp => mergedMap.set(emp.id, emp));
+
+            const uploadPromises: Promise<void>[] = [];
+            // Merge with current in-memory employees to prevent losing newly pulled/sync employees
+            const baseLocalEmployees = employeesRef.current.length > 0 ? employeesRef.current : localEmployees;
+
+            baseLocalEmployees.forEach(localEmp => {
+              if (deletedRecordsRef.current.has(localEmp.id) && deletedRecordsRef.current.get(localEmp.id) === "employee") {
+                return;
+              }
+              if (!mergedMap.has(localEmp.id)) {
+                // Local employee exists but not in cloud. Keep it and upload!
+                mergedMap.set(localEmp.id, localEmp);
+                uploadPromises.push(
+                  setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
+                    console.error("Error uploading local-only employee during sync:", err);
+                  })
+                );
+              } else {
+                // Both exist, compare updatedAt to pick the newest one
+                const cloudEmp = mergedMap.get(localEmp.id)!;
+                const localTime = localEmp.updatedAt ? new Date(localEmp.updatedAt).getTime() : 0;
+                const cloudTime = cloudEmp.updatedAt ? new Date(cloudEmp.updatedAt).getTime() : 0;
+                if (localTime > cloudTime) {
+                  mergedMap.set(localEmp.id, localEmp);
+                  uploadPromises.push(
+                    setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
+                      console.error("Error uploading newer local employee during sync:", err);
+                    })
+                  );
+                }
+              }
+            });
+
+            const finalMergedEmps = Array.from(mergedMap.values());
+            employeesRef.current = finalMergedEmps;
+            setEmployees(finalMergedEmps);
+            saveEmployeesToLocalStorage(finalMergedEmps);
+
+            if (uploadPromises.length > 0) {
+              Promise.all(uploadPromises).catch(err => console.error("Error in batch employee upload:", err));
+            }
           }
 
           checkAllLoaded("employees");
@@ -802,6 +955,13 @@ export default function App() {
 
         // 3. Supervisors
         const unsubSupervisors = onSnapshot(collection(db, "supervisors"), (snapshot) => {
+          // If empty but from cache, it's just a transient offline/connecting state. Skip state reset.
+          if (snapshot.empty && snapshot.metadata.fromCache) {
+            console.log("Supervisors snapshot is empty from local cache, waiting for server...");
+            checkAllLoaded("supervisors");
+            return;
+          }
+
           const fetchedSupervisors: string[] = [];
           snapshot.forEach((docSnap) => {
             const name = docSnap.data().name as string;
@@ -839,9 +999,25 @@ export default function App() {
 
             const activeFetched = fetchedSupervisors.filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
 
-            supervisorsRef.current = activeFetched;
-            setSupervisors(activeFetched);
-            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(activeFetched));
+            // Bi-directional merge of supervisors
+            const baseLocalSupervisors = supervisorsRef.current.length > 0 ? supervisorsRef.current : localSupervisors;
+            const mergedSupsSet = new Set([...activeFetched, ...baseLocalSupervisors]);
+            const finalMergedSups = Array.from(mergedSupsSet).filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
+
+            supervisorsRef.current = finalMergedSups;
+            setSupervisors(finalMergedSups);
+            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(finalMergedSups));
+
+            // Upload any local-only to cloud
+            const uploadPromises = finalMergedSups
+              .filter(sup => !activeFetched.includes(sup))
+              .map(sup => setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
+                console.error("Error uploading local supervisor during sync:", err);
+              }));
+            
+            if (uploadPromises.length > 0) {
+              Promise.all(uploadPromises).catch(err => console.error("Error in batch supervisor upload:", err));
+            }
           }
 
           checkAllLoaded("supervisors");
@@ -850,6 +1026,13 @@ export default function App() {
 
         // 4. Departments
         const unsubDepartments = onSnapshot(collection(db, "departments"), (snapshot) => {
+          // If empty but from cache, it's just a transient offline/connecting state. Skip state reset.
+          if (snapshot.empty && snapshot.metadata.fromCache) {
+            console.log("Departments snapshot is empty from local cache, waiting for server...");
+            checkAllLoaded("departments");
+            return;
+          }
+
           const fetchedDepartments: string[] = [];
           snapshot.forEach((docSnap) => {
             const name = docSnap.data().name as string;
@@ -887,9 +1070,25 @@ export default function App() {
 
             const activeFetched = fetchedDepartments.filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
 
-            departmentsRef.current = activeFetched;
-            setDepartments(activeFetched);
-            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(activeFetched));
+            // Bi-directional merge of departments
+            const baseLocalDepts = departmentsRef.current.length > 0 ? departmentsRef.current : localDepts;
+            const mergedDeptsSet = new Set([...activeFetched, ...baseLocalDepts]);
+            const finalMergedDepts = Array.from(mergedDeptsSet).filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
+
+            departmentsRef.current = finalMergedDepts;
+            setDepartments(finalMergedDepts);
+            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(finalMergedDepts));
+
+            // Upload any local-only to cloud
+            const uploadPromises = finalMergedDepts
+              .filter(d => !activeFetched.includes(d))
+              .map(d => setDoc(doc(db, "departments", d), { name: d }).catch(err => {
+                console.error("Error uploading local department during sync:", err);
+              }));
+
+            if (uploadPromises.length > 0) {
+              Promise.all(uploadPromises).catch(err => console.error("Error in batch department upload:", err));
+            }
           }
 
           checkAllLoaded("departments");
@@ -1449,8 +1648,14 @@ export default function App() {
     setShowSettings(false);
   };
 
-  // Real-time Clock
+  // Real-time Clock and Day transition auto-refresh
   useEffect(() => {
+    const getBangkokDateString = (d: Date) => {
+      const p = getBangkokDateParts(d);
+      return `${p.year}-${p.month}-${p.day}`;
+    };
+
+    let lastDateStr = getBangkokDateString(new Date());
     const updateTime = () => {
       const now = new Date();
       setTime(
@@ -1467,6 +1672,22 @@ export default function App() {
           second: "2-digit",
         }) + " น."
       );
+
+      const currentDateStr = getBangkokDateString(now);
+      if (currentDateStr !== lastDateStr) {
+        console.log("New day detected in clock loop. Triggering auto-refresh & auto-sync...");
+        lastDateStr = currentDateStr;
+        
+        // Auto update calendar selection to today's new date
+        setSelectedCalendarDate(now);
+        setDbRetryCount(prev => prev + 1);
+        
+        showNotification(
+          "ก้าวสู่บันทึกวันใหม่แล้ว ระบบทำการรีเฟรชหน้าต่างเพื่อดึงฐานข้อมูลและรายการเป่าของวันใหม่แบบเรียลไทม์เรียบร้อย",
+          "info",
+          "ขึ้นบันทึกวันใหม่แบบเรียลไทม์"
+        );
+      }
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
@@ -1598,7 +1819,7 @@ export default function App() {
       }
     }
 
-    const testId = `LOG-${Date.now().toString().slice(-6)}`;
+    const testId = `LOG-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const newLog: AlcoholTestLog = {
       id: testId,
       timestamp: new Date().toISOString(),
@@ -1650,10 +1871,9 @@ export default function App() {
             logsRef.current = updatedLogs;
             saveLogsToLocalStorage(updatedLogs);
 
-            if (dbStatus !== "offline") {
-              await deleteDoc(doc(db, "alcohol_logs", id));
-              await setDoc(doc(db, "deleted_records", id), { id, type: "log", timestamp: new Date().toISOString() });
-            }
+            await deleteDoc(doc(db, "alcohol_logs", id));
+            await setDoc(doc(db, "deleted_records", id), { id, type: "log", timestamp: new Date().toISOString() });
+
             if (selectedLog?.id === id) {
               setSelectedLog(null);
             }
@@ -1739,7 +1959,7 @@ export default function App() {
       return;
     }
 
-    const empIdStr = newEmpId.trim() || `EMP-${Math.floor(1000 + Math.random() * 9000)}`;
+    const empIdStr = newEmpId.trim() || `EMP-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
     
     // Check duplication for new employee
     if (employees.some(emp => emp.id.toLowerCase() === empIdStr.toLowerCase())) {
@@ -1785,10 +2005,7 @@ export default function App() {
     
     // Check duplication for new employee ID or auto generate
     if (employees.some(emp => emp.id.toLowerCase() === empIdStr.toLowerCase()) || !newEmpId.trim() || empIdStr === editingEmployeeId) {
-      empIdStr = `${baseId}-${Math.floor(1000 + Math.random() * 9000)}`;
-      while (employees.some(emp => emp.id.toLowerCase() === empIdStr.toLowerCase())) {
-        empIdStr = `${baseId}-${Math.floor(1000 + Math.random() * 9000)}`;
-      }
+      empIdStr = `${baseId}-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
     }
 
     const runAdd = () => {
@@ -1832,10 +2049,9 @@ export default function App() {
             employeesRef.current = updatedEmployees;
             saveEmployeesToLocalStorage(updatedEmployees);
 
-            if (dbStatus !== "offline") {
-              await deleteDoc(doc(db, "employees", id));
-              await setDoc(doc(db, "deleted_records", id), { id, type: "employee", timestamp: new Date().toISOString() });
-            }
+            await deleteDoc(doc(db, "employees", id));
+            await setDoc(doc(db, "deleted_records", id), { id, type: "employee", timestamp: new Date().toISOString() });
+
             showNotification(`ลบพนักงาน "${name}" ออกจากฐานข้อมูลระบบแล้ว`, "success", "ลบพนักงานสำเร็จ");
           } catch (e) {
             console.error("Error deleting employee:", e);
@@ -1863,6 +2079,226 @@ export default function App() {
       );
     });
   };
+
+  const handleMergeAndSyncAll = async (options?: { isSilent?: boolean }) => {
+    const isSilent = options?.isSilent ?? false;
+    setIsDbLoading(true);
+    setDbStatus("connecting");
+    if (!isSilent) {
+      showNotification("กำลังเริ่มการผสานข้อมูลและซิงค์ข้ามระบบคลาวด์...", "info", "เริ่มการซิงค์ข้อมูล");
+    }
+    try {
+      // 1. Sync Employees
+      const empSnap = await getDocs(collection(db, "employees"));
+      const cloudEmps: Employee[] = [];
+      empSnap.forEach((docSnap) => {
+        cloudEmps.push(docSnap.data() as Employee);
+      });
+
+      const localEmpsStr = localStorage.getItem("alcohol_employees");
+      const localEmps: Employee[] = localEmpsStr ? JSON.parse(localEmpsStr) : [];
+
+      const mergedEmpsMap = new Map<string, Employee>();
+      cloudEmps.forEach(emp => mergedEmpsMap.set(emp.id, emp));
+      
+      const empsToUpload: Employee[] = [];
+      localEmps.forEach(localEmp => {
+        if (!mergedEmpsMap.has(localEmp.id)) {
+          mergedEmpsMap.set(localEmp.id, localEmp);
+          empsToUpload.push(localEmp);
+        } else {
+          const cloudEmp = mergedEmpsMap.get(localEmp.id)!;
+          const localTime = localEmp.updatedAt ? new Date(localEmp.updatedAt).getTime() : 0;
+          const cloudTime = cloudEmp.updatedAt ? new Date(cloudEmp.updatedAt).getTime() : 0;
+          if (localTime > cloudTime) {
+            mergedEmpsMap.set(localEmp.id, localEmp);
+            empsToUpload.push(localEmp);
+          }
+        }
+      });
+
+      const finalEmps = Array.from(mergedEmpsMap.values());
+      setEmployees(finalEmps);
+      employeesRef.current = finalEmps;
+      saveEmployeesToLocalStorage(finalEmps);
+
+      const empPromises = empsToUpload.map(emp => {
+        return setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp)));
+      });
+
+      // 2. Sync Supervisors
+      const supSnap = await getDocs(collection(db, "supervisors"));
+      const cloudSups: string[] = [];
+      supSnap.forEach((docSnap) => {
+        const name = docSnap.data().name as string;
+        if (name) cloudSups.push(name);
+      });
+
+      const localSupsStr = localStorage.getItem("alcohol_supervisors");
+      const localSups: string[] = localSupsStr ? JSON.parse(localSupsStr) : [];
+
+      const mergedSups = Array.from(new Set([...cloudSups, ...localSups]));
+      setSupervisors(mergedSups);
+      supervisorsRef.current = mergedSups;
+      safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(mergedSups));
+
+      const supsToUpload = mergedSups.filter(sup => !cloudSups.includes(sup));
+      const supPromises = supsToUpload.map(sup => {
+        return setDoc(doc(db, "supervisors", sup), { name: sup });
+      });
+
+      // 3. Sync Departments
+      const deptSnap = await getDocs(collection(db, "departments"));
+      const cloudDepts: string[] = [];
+      deptSnap.forEach((docSnap) => {
+        const name = docSnap.data().name as string;
+        if (name) cloudDepts.push(name);
+      });
+
+      const localDeptsStr = localStorage.getItem("alcohol_departments");
+      const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
+
+      const mergedDepts = Array.from(new Set([...cloudDepts, ...localDepts]));
+      setDepartments(mergedDepts);
+      departmentsRef.current = mergedDepts;
+      safeLocalStorageSetItem("alcohol_departments", JSON.stringify(mergedDepts));
+
+      const deptsToUpload = mergedDepts.filter(dept => !cloudDepts.includes(dept));
+      const deptPromises = deptsToUpload.map(dept => {
+        return setDoc(doc(db, "departments", dept), { name: dept });
+      });
+
+      // 4. Sync Logs
+      const logSnap = await getDocs(collection(db, "alcohol_logs"));
+      const cloudLogs: AlcoholTestLog[] = [];
+      logSnap.forEach((docSnap) => {
+        cloudLogs.push(docSnap.data() as AlcoholTestLog);
+      });
+
+      const localLogsStr = localStorage.getItem("alcohol_logs");
+      const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
+
+      const mergedLogsMap = new Map<string, AlcoholTestLog>();
+      cloudLogs.forEach(log => mergedLogsMap.set(log.id, log));
+
+      const logsToUpload: AlcoholTestLog[] = [];
+      localLogs.forEach(localLog => {
+        if (!mergedLogsMap.has(localLog.id)) {
+          mergedLogsMap.set(localLog.id, localLog);
+          logsToUpload.push(localLog);
+        }
+      });
+
+      const finalLogs = Array.from(mergedLogsMap.values());
+      finalLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      setLogs(finalLogs);
+      logsRef.current = finalLogs;
+      saveLogsToLocalStorage(finalLogs);
+
+      const logPromises = logsToUpload.map(log => {
+        return setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log)));
+      });
+
+      // Execute all write promises
+      await Promise.all([
+        ...empPromises,
+        ...supPromises,
+        ...deptPromises,
+        ...logPromises
+      ]);
+
+      setDbStatus("connected");
+      setDbErrorMessage(null);
+      if (!isSilent) {
+        showNotification(
+          `ผสานและซิงก์ข้อมูลสำเร็จ! พนักงาน: ${finalEmps.length} คน, ประวัติเป่า: ${finalLogs.length} รายการ (ซิงค์อัปโหลดเพิ่มไปยังระบบคลาวด์เรียบร้อย)`,
+          "success",
+          "ซิงก์คลาวด์สมบูรณ์"
+        );
+      }
+    } catch (err) {
+      console.error("Error during manual bi-directional merge & sync:", err);
+      setDbStatus("error");
+      setDbErrorMessage(err instanceof Error ? err.message : String(err));
+      if (!isSilent) {
+        showNotification("การผสานและซิงก์ข้อมูลบางรายการล้มเหลว กรุณาตรวจสอบสัญญาณอินเทอร์เน็ต", "error", "ซิงค์ล้มเหลว");
+      }
+    } finally {
+      setIsDbLoading(false);
+    }
+  };
+
+  // Mobile app resume / browser tab focused real-time auto-synchronization
+  useEffect(() => {
+    const handleFocusResume = () => {
+      if (document.visibilityState === "visible") {
+        console.log("App became visible/focused. Syncing real-time database now...");
+        
+        // Rollover detection on mobile wake-up
+        const now = new Date();
+        const lastSystem = lastSystemDateRef.current;
+        const partsLastSystem = getBangkokDateParts(lastSystem);
+        const partsSelected = getBangkokDateParts(selectedCalendarDate);
+        
+        // Did the user have "today" selected before?
+        const wasTodaySelected = 
+          partsLastSystem.year === partsSelected.year &&
+          partsLastSystem.month === partsSelected.month &&
+          partsLastSystem.day === partsSelected.day;
+          
+        const partsNow = getBangkokDateParts(now);
+        const hasDayChanged = 
+          partsNow.year !== partsLastSystem.year ||
+          partsNow.month !== partsLastSystem.month ||
+          partsNow.day !== partsLastSystem.day;
+
+        if (hasDayChanged) {
+          console.log("Date rollover detected upon resume.");
+          if (wasTodaySelected && calendarMode === "SINGLE") {
+            console.log("Auto-rolling selected calendar date to new 'today'...");
+            setSelectedCalendarDate(now);
+            setCalendarViewMonth(now);
+            showNotification(
+              "ระบบได้ปรับเปลี่ยนตัวเลือกวันที่คัดกรองเป็นวันปัจจุบันโดยอัตโนมัติเนื่องจากก้าวสู่วันใหม่เรียบร้อย",
+              "info",
+              "ปรับปรุงวันที่อัตโนมัติ"
+            );
+          }
+        }
+        
+        lastSystemDateRef.current = now;
+        setDbRetryCount(prev => prev + 1);
+        
+        // Quietly perform full bi-directional sync if we are connected
+        if (dbStatus === "connected" && !isDbLoading) {
+          handleMergeAndSyncAll({ isSilent: true }).catch(err => {
+            console.warn("Visibility auto-sync silent warning:", err);
+          });
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleFocusResume);
+    window.addEventListener("focus", handleFocusResume);
+    return () => {
+      document.removeEventListener("visibilitychange", handleFocusResume);
+      window.removeEventListener("focus", handleFocusResume);
+    };
+  }, [dbStatus, isDbLoading, selectedCalendarDate, calendarMode]);
+
+  // Periodic background real-time sync loop (runs every 3 minutes)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (dbStatus === "connected" && !isDbLoading) {
+        console.log("Auto-syncing data in background (3-minute interval)...");
+        handleMergeAndSyncAll({ isSilent: true }).catch(err => {
+          console.warn("Periodic background auto-sync warning:", err);
+        });
+      }
+    }, 180000); // 3 minutes in ms
+
+    return () => clearInterval(interval);
+  }, [dbStatus, isDbLoading]);
 
   const handleDownloadExcelTemplate = () => {
     const templateData = [
@@ -2111,7 +2547,7 @@ export default function App() {
   const handleConfirmSaveLeave = (emp: Employee, reason: string, notes: string) => {
     const actionLabel = `บันทึกสถานะ ลา ของคุณ: ${emp.name} (${reason})`;
     requestPermission(actionLabel, () => {
-      const testId = `LOG-LV-${Date.now().toString().slice(-6)}`;
+      const testId = `LOG-LV-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
       const symptomList = [reason];
       if (notes.trim()) {
         symptomList.push(notes.trim());
@@ -2513,6 +2949,16 @@ export default function App() {
       </html>
     `);
     printWindow.document.close();
+
+    // Redundant direct print invocation from parent to bypass popup onload sandboxing limitations
+    setTimeout(() => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch (err) {
+        console.error("Popup direct print call failed:", err);
+      }
+    }, 600);
   };
 
   // Unified print handler that ensures high compatibility inside and outside of iframes
@@ -2533,35 +2979,6 @@ export default function App() {
   };
 
   // 10. Dashboard Stats Calculations
-  // Helper to extract year, month, and day in Thailand (Asia/Bangkok) timezone
-  const getBangkokDateParts = (dateOrString: Date | string) => {
-    try {
-      const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Bangkok",
-        year: "numeric",
-        month: "numeric",
-        day: "numeric",
-      });
-      const parts = formatter.formatToParts(d);
-      const partMap = new Map(parts.map(p => [p.type, p.value]));
-      return {
-        year: parseInt(partMap.get("year") || "0", 10),
-        month: parseInt(partMap.get("month") || "0", 10) - 1, // 0-indexed month
-        day: parseInt(partMap.get("day") || "0", 10),
-      };
-    } catch (e) {
-      console.error("Error formatting Bangkok date parts:", e);
-      // Fallback to local timezone on error
-      const d = typeof dateOrString === "string" ? new Date(dateOrString) : dateOrString;
-      return {
-        year: d.getFullYear(),
-        month: d.getMonth(),
-        day: d.getDate()
-      };
-    }
-  };
-
   // Helper to check if a log timestamp falls inside the selected calendar date/range filter
   const checkLogMatchesCalendar = (timestamp: string) => {
     if (calendarMode === "ALL") {
@@ -2846,7 +3263,7 @@ export default function App() {
   };
 
   const handleRecordExceededTime = (empName: string, empId?: string, deptName?: string) => {
-    const testId = `LOG-${Date.now().toString().slice(-6)}`;
+    const testId = `LOG-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const newLog: AlcoholTestLog = {
       id: testId,
       timestamp: new Date().toISOString(),
@@ -2931,7 +3348,7 @@ export default function App() {
                 }`} />
                 {dbStatus === "connected" ? "ซิงค์คลาวด์เรียบร้อย (Cloud Synced)" :
                  dbStatus === "connecting" ? "กำลังเชื่อมคลาวด์..." :
-                 dbStatus === "offline" ? "ระบบออนไลน์เรียลไทม์ (Smart Sync / Safe Cache)" :
+                 dbStatus === "offline" ? "โหมดบันทึกในเครื่องชั่วคราว (ออฟไลน์ - Offline Cache)" :
                  "เชื่อมต่อคลาวด์ผิดพลาด"}
               </span>
               {dbErrorMessage && (
@@ -2971,13 +3388,31 @@ export default function App() {
           </div>
         </div>
 
-        {/* Dynamic Clock Timer & Settings Toggle */}
+        {/* Dynamic Clock Timer, Sync Button, & Settings Toggle */}
         <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
+          {/* Dynamic Clock */}
           <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-2 rounded-xl text-slate-600 font-mono text-xs w-full sm:w-auto shadow-inner">
             <Clock size={14} className="text-indigo-600 shrink-0" />
             <span>{time || "กำลังโหลดเวลา..."}</span>
           </div>
 
+          {/* Real-time Force Sync Button */}
+          <button
+            type="button"
+            onClick={() => handleMergeAndSyncAll({ isSilent: false })}
+            disabled={isDbLoading}
+            className={`flex items-center justify-center gap-1.5 text-xs font-sans font-bold py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm ${
+              isDbLoading
+                ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                : "bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 hover:border-emerald-600"
+            }`}
+            title="กดเพื่อผสานรวมข้อมูลพนักงานและประวัติเป่าให้เป็นเวอร์ชันล่าสุดของวันนี้ทันทีข้ามทุกเครื่อง"
+          >
+            <RefreshCw size={14} className={`text-emerald-600 ${isDbLoading ? "animate-spin text-slate-400" : ""}`} />
+            {isDbLoading ? "กำลังเชื่อมข้อมูล..." : "ซิงค์ด่วนข้ามเครื่อง (Sync)"}
+          </button>
+
+          {/* Settings Toggle */}
           <button
             id="toggle-settings-btn"
             type="button"
@@ -3828,17 +4263,7 @@ export default function App() {
               return false;
             };
 
-            const isDateToday = (date: Date) => {
-              const parts1 = getBangkokDateParts(date);
-              const parts2 = getBangkokDateParts(new Date());
-              return (
-                parts1.day === parts2.day &&
-                parts1.month === parts2.month &&
-                parts1.year === parts2.year
-              );
-            };
-
-            const handleDayClick = (date: Date) => {
+             const handleDayClick = (date: Date) => {
               if (calendarMode === "ALL") {
                 setCalendarMode("SINGLE");
                 setSelectedCalendarDate(date);
@@ -4137,10 +4562,8 @@ export default function App() {
               }
               const startTxt = selectedCalendarDate.toLocaleDateString("th-TH", { day: "numeric", month: "long" });
               if (calendarMode === "SINGLE") {
-                const isToday = selectedCalendarDate.toDateString() === new Date().toDateString();
-                const yesterday = new Date();
-                yesterday.setDate(yesterday.getDate() - 1);
-                const isYesterday = selectedCalendarDate.toDateString() === yesterday.toDateString();
+                const isToday = isDateToday(selectedCalendarDate);
+                const isYesterday = isDateYesterday(selectedCalendarDate);
                 
                 const dayLabel = isToday ? "วันนี้" : isYesterday ? "เมื่อวาน" : `วันที่ ${startTxt}`;
                 return {
@@ -4875,16 +5298,25 @@ export default function App() {
                                 ค้นหารายชื่อ ตรวจสอบสถานะ แก้ไขข้อมูลพนักงาน หรือทำการลบพนักงาน
                               </p>
                             </div>
-                            {/* Stats & Delete all */}
-                            <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                            {/* Stats, Delete all, and Merge Sync */}
+                            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
                               <span className="text-[10px] font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100/50">
                                 ทั้งหมด {employees.length} คน
                               </span>
+                              <button
+                                type="button"
+                                onClick={handleMergeAndSyncAll}
+                                className="text-[10px] font-sans font-bold text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2.5 py-1 rounded-lg border border-emerald-200 hover:border-emerald-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                                title="ผสานรวมและซิงก์ข้อมูลพนักงานและประวัติระหว่างเครื่องนี้กับคลาวด์ทันที เพื่อให้ข้อมูลคอมพิวเตอร์และมือถือเป็นชุดเดียวกัน"
+                              >
+                                <RefreshCw size={11} className={isDbLoading ? "animate-spin" : ""} />
+                                {isDbLoading ? "กำลังผสานรวม..." : "ผสานข้อมูลข้ามอุปกรณ์ (Sync)"}
+                              </button>
                               {employees.length > 0 && (
                                 <button
                                   type="button"
                                   onClick={handleDeleteAllEmployees}
-                                  className="text-[10px] font-sans font-bold text-red-600 hover:text-white bg-red-50 hover:bg-red-600 px-2.5 py-0.5 rounded-lg border border-red-200 hover:border-red-600 transition flex items-center gap-1 cursor-pointer"
+                                  className="text-[10px] font-sans font-bold text-red-600 hover:text-white bg-red-50 hover:bg-red-600 px-2.5 py-1 rounded-lg border border-red-200 hover:border-red-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
                                   title="ลบรายชื่อพนักงานทั้งหมดออกจากระบบ"
                                 >
                                   <Trash2 size={11} />

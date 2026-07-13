@@ -30,11 +30,12 @@ body {
 
 /* Print CSS formatting rules */
 @media print {
-  /* Hide all other elements in root except the print modal backdrop */
-  #root > *:not(.print-modal-backdrop),
-  #main-applet-root > *:not(.print-modal-backdrop),
-  header,
+  /* Hide standard page layout components */
+  #app-header-banner,
+  #toggle-settings-btn,
+  #applet-guideline-footer,
   main,
+  header,
   footer,
   aside,
   #form-entry-column,
@@ -78,6 +79,7 @@ body {
     margin: 0 !important;
     display: block !important;
     overflow: visible !important;
+    z-index: 99999 !important;
   }
 
   .print-modal-content {
