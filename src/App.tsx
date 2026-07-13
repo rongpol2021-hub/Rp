@@ -58,6 +58,7 @@ import {
 import { INITIAL_LOGS, DEPARTMENTS, SYMPTOMS_LIST, REGISTERED_EMPLOYEES, DEFAULT_SUPERVISORS } from "./data/mockData";
 import CameraCapture from "./components/CameraCapture";
 import SignaturePad from "./components/SignaturePad";
+import UserManualSlides from "./components/UserManualSlides";
 import { User as FirebaseUser } from "firebase/auth";
 import {
   collection,
@@ -247,6 +248,7 @@ export default function App() {
   const [selectedLog, setSelectedLog] = useState<AlcoholTestLog | null>(null);
   const [showPrintReport, setShowPrintReport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUserManual, setShowUserManual] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PASS" | "FAIL" | "LEAVE">("ALL");
   const [deptFilter, setDeptFilter] = useState("ALL");
@@ -3410,6 +3412,18 @@ export default function App() {
           >
             <RefreshCw size={14} className={`text-emerald-600 ${isDbLoading ? "animate-spin text-slate-400" : ""}`} />
             {isDbLoading ? "กำลังเชื่อมข้อมูล..." : "ซิงค์ด่วนข้ามเครื่อง (Sync)"}
+          </button>
+
+          {/* User Guide Toggle */}
+          <button
+            id="toggle-usermanual-btn"
+            type="button"
+            onClick={() => setShowUserManual(true)}
+            className="flex items-center justify-center gap-1.5 text-xs font-sans font-bold bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 hover:border-indigo-600 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm"
+            title="เปิดสไลด์คู่มือการใช้งานระบบบันทึกการเป่าแอลกอฮอล์รายวัน"
+          >
+            <HelpCircle size={14} />
+            คู่มือการใช้งาน
           </button>
 
           {/* Settings Toggle */}
@@ -6774,6 +6788,8 @@ export default function App() {
                   {[
                     { label: "ลากิจ", text: "ลากิจ (มีธุระส่วนตัว)" },
                     { label: "ลาป่วย", text: "ลาป่วย (ไม่สบาย)" },
+                    { label: "ลาพักร้อน", text: "ลาพักร้อน / ลาหยุดประจำปี" },
+                    { label: "ลาคลอด", text: "ลาคลอด / ลาเพื่อเตรียมคลอดและคลอดบุตร" },
                     { label: "หยุดงาน/ไม่เข้ากะ", text: "ไม่ได้เข้ากะปฏิบัติหน้าที่ / หยุดประจำสัปดาห์" },
                     { label: "งานนอกสถานที่", text: "ไปปฏิบัติงานนอกสถานที่ (Site Visit)" },
                     { label: "ขาดงาน", text: "ขาดงาน / ขาดการติดต่อ" }
@@ -7170,6 +7186,17 @@ export default function App() {
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* ================= USER MANUAL SLIDESHOW OVERLAY ================= */}
+      <AnimatePresence>
+        {showUserManual && (
+          <UserManualSlides 
+            isOpen={showUserManual} 
+            onClose={() => setShowUserManual(false)} 
+            companyName={settings.companyName} 
+          />
         )}
       </AnimatePresence>
 
