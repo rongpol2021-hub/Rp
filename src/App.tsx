@@ -68,7 +68,8 @@ import {
   onSnapshot,
   getDocs,
   getDoc,
-  disableNetwork
+  disableNetwork,
+  writeBatch
 } from "firebase/firestore";
 import {
   initAuth,
@@ -1217,6 +1218,13 @@ export default function App() {
         );
         hasNotifiedQuotaExceeded.current = true;
       }
+    } else {
+      const errMsg = err?.message || String(err);
+      showNotification(
+        `ไม่สามารถบันทึกข้อมูลไปยังฐานข้อมูลคลาวด์ได้ชั่วคราว: ${errMsg} (ระบบทำการเซฟข้อมูลของคุณเก็บไว้ในเครื่องอย่างปลอดภัย)`,
+        "warning",
+        "เกิดข้อผิดพลาดในการบันทึกข้อมูลขึ้นคลาวด์"
+      );
     }
   };
 
@@ -1229,28 +1237,40 @@ export default function App() {
 
     try {
       const oldLogsMap = new Map(oldLogs.map(l => [l.id, l]));
+      const ops: Array<{ type: "set" | "delete"; ref: any; data?: any }> = [];
 
-      let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newLogsMap = new Map(updatedLogs.map(l => [l.id, l]));
         const logsToDelete = oldLogs.filter(l => !newLogsMap.has(l.id));
-        deletePromises = logsToDelete.flatMap(l => [
-          deleteDoc(doc(db, "alcohol_logs", l.id)),
-          setDoc(doc(db, "deleted_records", l.id), { id: l.id, type: "log", timestamp: new Date().toISOString() })
-        ]);
+        logsToDelete.forEach(l => {
+          ops.push({ type: "delete", ref: doc(db, "alcohol_logs", l.id) });
+          ops.push({ type: "set", ref: doc(db, "deleted_records", l.id), data: { id: l.id, type: "log", timestamp: new Date().toISOString() } });
+        });
       }
 
-      const savePromises = updatedLogs
-        .filter(l => {
-          const old = oldLogsMap.get(l.id);
-          return !old || JSON.stringify(old) !== JSON.stringify(l);
-        })
-        .flatMap(l => [
-          setDoc(doc(db, "alcohol_logs", l.id), JSON.parse(JSON.stringify(l))),
-          deleteDoc(doc(db, "deleted_records", l.id))
-        ]);
+      const logsToSave = updatedLogs.filter(l => {
+        const old = oldLogsMap.get(l.id);
+        return !old || JSON.stringify(old) !== JSON.stringify(l);
+      });
 
-      await Promise.all([...deletePromises, ...savePromises]);
+      logsToSave.forEach(l => {
+        ops.push({ type: "set", ref: doc(db, "alcohol_logs", l.id), data: JSON.parse(JSON.stringify(l)) });
+        ops.push({ type: "delete", ref: doc(db, "deleted_records", l.id) });
+      });
+
+      const chunkSize = 300;
+      for (let i = 0; i < ops.length; i += chunkSize) {
+        const chunk = ops.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          if (op.type === "set") {
+            batch.set(op.ref, op.data);
+          } else {
+            batch.delete(op.ref);
+          }
+        });
+        await batch.commit();
+      }
     } catch (e) {
       handleSaveError(e);
     }
@@ -1281,27 +1301,40 @@ export default function App() {
 
     try {
       const finalEmpMap = new Map(finalEmployees.map(e => [e.id, e]));
+      const ops: Array<{ type: "set" | "delete"; ref: any; data?: any }> = [];
 
-      let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const empsToDelete = oldEmployees.filter(e => !finalEmpMap.has(e.id));
-        deletePromises = empsToDelete.flatMap(e => [
-          deleteDoc(doc(db, "employees", e.id)),
-          setDoc(doc(db, "deleted_records", e.id), { id: e.id, type: "employee", timestamp: nowIso })
-        ]);
+        empsToDelete.forEach(e => {
+          ops.push({ type: "delete", ref: doc(db, "employees", e.id) });
+          ops.push({ type: "set", ref: doc(db, "deleted_records", e.id), data: { id: e.id, type: "employee", timestamp: nowIso } });
+        });
       }
 
-      const savePromises = finalEmployees
-        .filter(e => {
-          const old = oldEmpMap.get(e.id);
-          return !old || JSON.stringify(old) !== JSON.stringify(e);
-        })
-        .flatMap(e => [
-          setDoc(doc(db, "employees", e.id), JSON.parse(JSON.stringify(e))),
-          deleteDoc(doc(db, "deleted_records", e.id))
-        ]);
+      const empsToSave = finalEmployees.filter(e => {
+        const old = oldEmpMap.get(e.id);
+        return !old || JSON.stringify(old) !== JSON.stringify(e);
+      });
 
-      await Promise.all([...deletePromises, ...savePromises]);
+      empsToSave.forEach(e => {
+        ops.push({ type: "set", ref: doc(db, "employees", e.id), data: JSON.parse(JSON.stringify(e)) });
+        ops.push({ type: "delete", ref: doc(db, "deleted_records", e.id) });
+      });
+
+      // Execute in batches of 300 operations to stay well below the Firestore 500-limit and avoid chunk issues
+      const chunkSize = 300;
+      for (let i = 0; i < ops.length; i += chunkSize) {
+        const chunk = ops.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          if (op.type === "set") {
+            batch.set(op.ref, op.data);
+          } else {
+            batch.delete(op.ref);
+          }
+        });
+        await batch.commit();
+      }
     } catch (e) {
       handleSaveError(e);
     }
@@ -1316,25 +1349,36 @@ export default function App() {
 
     try {
       const oldSet = new Set(oldSupervisors);
+      const ops: Array<{ type: "set" | "delete"; ref: any; data?: any }> = [];
 
-      let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newSet = new Set(updatedSupervisors);
         const supsToDelete = oldSupervisors.filter(name => !newSet.has(name));
-        deletePromises = supsToDelete.flatMap(name => [
-          deleteDoc(doc(db, "supervisors", name)),
-          setDoc(doc(db, "deleted_records", name), { id: name, type: "supervisor", timestamp: new Date().toISOString() })
-        ]);
+        supsToDelete.forEach(name => {
+          ops.push({ type: "delete", ref: doc(db, "supervisors", name) });
+          ops.push({ type: "set", ref: doc(db, "deleted_records", name), data: { id: name, type: "supervisor", timestamp: new Date().toISOString() } });
+        });
       }
 
-      const savePromises = updatedSupervisors
-        .filter(name => !oldSet.has(name))
-        .flatMap(name => [
-          setDoc(doc(db, "supervisors", name), { name }),
-          deleteDoc(doc(db, "deleted_records", name))
-        ]);
+      const supsToSave = updatedSupervisors.filter(name => !oldSet.has(name));
+      supsToSave.forEach(name => {
+        ops.push({ type: "set", ref: doc(db, "supervisors", name), data: { name } });
+        ops.push({ type: "delete", ref: doc(db, "deleted_records", name) });
+      });
 
-      await Promise.all([...deletePromises, ...savePromises]);
+      const chunkSize = 300;
+      for (let i = 0; i < ops.length; i += chunkSize) {
+        const chunk = ops.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          if (op.type === "set") {
+            batch.set(op.ref, op.data);
+          } else {
+            batch.delete(op.ref);
+          }
+        });
+        await batch.commit();
+      }
     } catch (e) {
       handleSaveError(e);
     }
@@ -1349,25 +1393,36 @@ export default function App() {
 
     try {
       const oldSet = new Set(oldDepartments);
+      const ops: Array<{ type: "set" | "delete"; ref: any; data?: any }> = [];
 
-      let deletePromises: Promise<void>[] = [];
       if (isFullOverwrite) {
         const newSet = new Set(updatedDepartments);
         const deptsToDelete = oldDepartments.filter(name => !newSet.has(name));
-        deletePromises = deptsToDelete.flatMap(name => [
-          deleteDoc(doc(db, "departments", name)),
-          setDoc(doc(db, "deleted_records", name), { id: name, type: "department", timestamp: new Date().toISOString() })
-        ]);
+        deptsToDelete.forEach(name => {
+          ops.push({ type: "delete", ref: doc(db, "departments", name) });
+          ops.push({ type: "set", ref: doc(db, "deleted_records", name), data: { id: name, type: "department", timestamp: new Date().toISOString() } });
+        });
       }
 
-      const savePromises = updatedDepartments
-        .filter(name => !oldSet.has(name))
-        .flatMap(name => [
-          setDoc(doc(db, "departments", name), { name }),
-          deleteDoc(doc(db, "deleted_records", name))
-        ]);
+      const deptsToSave = updatedDepartments.filter(name => !oldSet.has(name));
+      deptsToSave.forEach(name => {
+        ops.push({ type: "set", ref: doc(db, "departments", name), data: { name } });
+        ops.push({ type: "delete", ref: doc(db, "deleted_records", name) });
+      });
 
-      await Promise.all([...deletePromises, ...savePromises]);
+      const chunkSize = 300;
+      for (let i = 0; i < ops.length; i += chunkSize) {
+        const chunk = ops.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach(op => {
+          if (op.type === "set") {
+            batch.set(op.ref, op.data);
+          } else {
+            batch.delete(op.ref);
+          }
+        });
+        await batch.commit();
+      }
     } catch (e) {
       handleSaveError(e);
     }
@@ -1961,7 +2016,7 @@ export default function App() {
       return;
     }
 
-    const empIdStr = newEmpId.trim() || `EMP-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+    const empIdStr = (newEmpId.trim() || `EMP-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`).replace(/[\/\\]/g, "-");
     
     // Check duplication for new employee
     if (employees.some(emp => emp.id.toLowerCase() === empIdStr.toLowerCase())) {
@@ -2082,161 +2137,203 @@ export default function App() {
     });
   };
 
+  const handleRestoreDefaultEmployees = () => {
+    requestPermission("โหลดรายชื่อพนักงานเริ่มต้น", () => {
+      triggerConfirmation(
+        "✨ ยืนยันโหลดรายชื่อพนักงานเริ่มต้น",
+        "คุณต้องการนำเข้ารายชื่อพนักงานเริ่มต้นของระบบจำนวน 10 คนกลับเข้ามาในฐานข้อมูลคลาวด์ใช่หรือไม่? (รายชื่อที่เคยลบไปจะถูกดึงกลับมาใช้งานได้ทันที)",
+        async () => {
+          try {
+            setIsDbLoading(true);
+            setDbStatus("connecting");
+            
+            // 1. Clear default employees from deleted_records in Firestore
+            const batch = writeBatch(db);
+            REGISTERED_EMPLOYEES.forEach(emp => {
+              batch.delete(doc(db, "deleted_records", emp.id));
+              if (deletedRecordsRef.current) {
+                deletedRecordsRef.current.delete(emp.id);
+              }
+            });
+            await batch.commit();
+
+            // 2. Save/Upload the REGISTERED_EMPLOYEES (this will also remove them from deleted_records)
+            await saveEmployees(REGISTERED_EMPLOYEES, false);
+            
+            // Force save seeded flag to localStorage so it is marked
+            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
+            
+            showNotification("นำเข้ารายชื่อพนักงานเริ่มต้นสำเร็จแล้ว ข้อมูลกำลังซิงค์ไปยังอุปกรณ์นี้", "success", "นำเข้าสำเร็จ");
+          } catch (e) {
+            console.error("Error restoring default employees:", e);
+            showNotification("เกิดข้อผิดพลาดในการนำเข้ารายชื่อพนักงานเริ่มต้น", "error", "นำเข้าล้มเหลว");
+          } finally {
+            setIsDbLoading(false);
+          }
+        }
+      );
+    });
+  };
+
   const handleMergeAndSyncAll = async (options?: { isSilent?: boolean }) => {
     const isSilent = options?.isSilent ?? false;
     setIsDbLoading(true);
     setDbStatus("connecting");
     if (!isSilent) {
-      showNotification("กำลังเริ่มการผสานข้อมูลและซิงค์ข้ามระบบคลาวด์...", "info", "เริ่มการซิงค์ข้อมูล");
+      showNotification("กำลังเริ่มการเชื่อมต่อและซิงค์ข้อมูลกับฐานข้อมูลคลาวด์...", "info", "เริ่มการซิงค์");
     }
     try {
-      // 1. Sync Employees
-      const empSnap = await getDocs(collection(db, "employees"));
-      const cloudEmps: Employee[] = [];
-      empSnap.forEach((docSnap) => {
-        cloudEmps.push(docSnap.data() as Employee);
-      });
-
-      const localEmpsStr = localStorage.getItem("alcohol_employees");
-      const localEmps: Employee[] = localEmpsStr ? JSON.parse(localEmpsStr) : [];
-
-      const mergedEmpsMap = new Map<string, Employee>();
-      cloudEmps.forEach(emp => mergedEmpsMap.set(emp.id, emp));
+      setDbRetryCount(prev => prev + 1);
       
-      const empsToUpload: Employee[] = [];
-      localEmps.forEach(localEmp => {
+      const [logsSnap, empsSnap, supsSnap, deptsSnap, deletedSnap] = await Promise.all([
+        getDocs(collection(db, "alcohol_logs")),
+        getDocs(collection(db, "employees")),
+        getDocs(collection(db, "supervisors")),
+        getDocs(collection(db, "departments")),
+        getDocs(collection(db, "deleted_records"))
+      ]);
+      
+      const deletedMap = new Map<string, string>();
+      const deletedList: {id: string, type: string}[] = [];
+      deletedSnap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.id) {
+          deletedMap.set(data.id, data.type);
+          deletedList.push({ id: data.id, type: data.type });
+        }
+      });
+      safeLocalStorageSetItem("alcohol_deleted_records", JSON.stringify(deletedList));
+      deletedRecordsRef.current = deletedMap;
+      purgeDeletedRecords(deletedMap);
+      
+      // Merge logs
+      const fetchedLogs: AlcoholTestLog[] = [];
+      logsSnap.forEach((docSnap) => {
+        fetchedLogs.push(docSnap.data() as AlcoholTestLog);
+      });
+      const localLogsStr = localStorage.getItem("alcohol_logs");
+      const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
+      const activeLogs = fetchedLogs.filter(l => !(deletedMap.has(l.id) && deletedMap.get(l.id) === "log"));
+      const mergedLogsMap = new Map<string, AlcoholTestLog>();
+      activeLogs.forEach(log => mergedLogsMap.set(log.id, log));
+      
+      const baseLocalLogs = logsRef.current.length > 0 ? logsRef.current : localLogs;
+      const logUploadPromises: Promise<void>[] = [];
+      baseLocalLogs.forEach(localLog => {
+        if (deletedMap.has(localLog.id) && deletedMap.get(localLog.id) === "log") return;
+        if (!mergedLogsMap.has(localLog.id)) {
+          mergedLogsMap.set(localLog.id, localLog);
+          logUploadPromises.push(
+            setDoc(doc(db, "alcohol_logs", localLog.id), JSON.parse(JSON.stringify(localLog)))
+          );
+        }
+      });
+      const finalMergedLogs = Array.from(mergedLogsMap.values());
+      finalMergedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      logsRef.current = finalMergedLogs;
+      setLogs(finalMergedLogs);
+      saveLogsToLocalStorage(finalMergedLogs);
+      
+      // Merge employees
+      const fetchedEmps: Employee[] = [];
+      empsSnap.forEach((docSnap) => {
+        fetchedEmps.push(docSnap.data() as Employee);
+      });
+      const localEmpsStr = localStorage.getItem("alcohol_employees");
+      const localEmployees: Employee[] = localEmpsStr ? JSON.parse(localEmpsStr) : [];
+      const activeEmps = fetchedEmps.filter(e => !(deletedMap.has(e.id) && deletedMap.get(e.id) === "employee"));
+      const mergedEmpsMap = new Map<string, Employee>();
+      activeEmps.forEach(emp => mergedEmpsMap.set(emp.id, emp));
+      
+      const baseLocalEmps = employeesRef.current.length > 0 ? employeesRef.current : localEmployees;
+      const empUploadPromises: Promise<void>[] = [];
+      baseLocalEmps.forEach(localEmp => {
+        if (deletedMap.has(localEmp.id) && deletedMap.get(localEmp.id) === "employee") return;
         if (!mergedEmpsMap.has(localEmp.id)) {
           mergedEmpsMap.set(localEmp.id, localEmp);
-          empsToUpload.push(localEmp);
+          empUploadPromises.push(
+            setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp)))
+          );
         } else {
           const cloudEmp = mergedEmpsMap.get(localEmp.id)!;
           const localTime = localEmp.updatedAt ? new Date(localEmp.updatedAt).getTime() : 0;
           const cloudTime = cloudEmp.updatedAt ? new Date(cloudEmp.updatedAt).getTime() : 0;
           if (localTime > cloudTime) {
             mergedEmpsMap.set(localEmp.id, localEmp);
-            empsToUpload.push(localEmp);
+            empUploadPromises.push(
+              setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp)))
+            );
           }
         }
       });
-
-      const finalEmps = Array.from(mergedEmpsMap.values());
-      setEmployees(finalEmps);
-      employeesRef.current = finalEmps;
-      saveEmployeesToLocalStorage(finalEmps);
-
-      const empPromises = empsToUpload.map(emp => {
-        return setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp)));
-      });
-
-      // 2. Sync Supervisors
-      const supSnap = await getDocs(collection(db, "supervisors"));
-      const cloudSups: string[] = [];
-      supSnap.forEach((docSnap) => {
+      const finalMergedEmps = Array.from(mergedEmpsMap.values());
+      employeesRef.current = finalMergedEmps;
+      setEmployees(finalMergedEmps);
+      saveEmployeesToLocalStorage(finalMergedEmps);
+      
+      // Merge supervisors
+      const fetchedSups: string[] = [];
+      supsSnap.forEach((docSnap) => {
         const name = docSnap.data().name as string;
-        if (name) cloudSups.push(name);
+        if (name) fetchedSups.push(name);
       });
-
       const localSupsStr = localStorage.getItem("alcohol_supervisors");
-      const localSups: string[] = localSupsStr ? JSON.parse(localSupsStr) : [];
-
-      const mergedSups = Array.from(new Set([...cloudSups, ...localSups]));
-      setSupervisors(mergedSups);
-      supervisorsRef.current = mergedSups;
-      safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(mergedSups));
-
-      const supsToUpload = mergedSups.filter(sup => !cloudSups.includes(sup));
-      const supPromises = supsToUpload.map(sup => {
-        return setDoc(doc(db, "supervisors", sup), { name: sup });
-      });
-
-      // 3. Sync Departments
-      const deptSnap = await getDocs(collection(db, "departments"));
-      const cloudDepts: string[] = [];
-      deptSnap.forEach((docSnap) => {
+      const localSupervisors: string[] = localSupsStr ? JSON.parse(localSupsStr) : [];
+      const activeSups = fetchedSups.filter(s => !(deletedMap.has(s) && deletedMap.get(s) === "supervisor"));
+      const baseLocalSupervisors = supervisorsRef.current.length > 0 ? supervisorsRef.current : localSupervisors;
+      const mergedSupsSet = new Set([...activeSups, ...baseLocalSupervisors]);
+      const finalMergedSups = Array.from(mergedSupsSet).filter(s => !(deletedMap.has(s) && deletedMap.get(s) === "supervisor"));
+      supervisorsRef.current = finalMergedSups;
+      setSupervisors(finalMergedSups);
+      safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(finalMergedSups));
+      const supUploadPromises = finalMergedSups
+        .filter(sup => !activeSups.includes(sup))
+        .map(sup => setDoc(doc(db, "supervisors", sup), { name: sup }));
+        
+      // Merge departments
+      const fetchedDepts: string[] = [];
+      deptsSnap.forEach((docSnap) => {
         const name = docSnap.data().name as string;
-        if (name) cloudDepts.push(name);
+        if (name) fetchedDepts.push(name);
       });
-
       const localDeptsStr = localStorage.getItem("alcohol_departments");
       const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
-
-      const mergedDepts = Array.from(new Set([...cloudDepts, ...localDepts]));
-      setDepartments(mergedDepts);
-      departmentsRef.current = mergedDepts;
-      safeLocalStorageSetItem("alcohol_departments", JSON.stringify(mergedDepts));
-
-      const deptsToUpload = mergedDepts.filter(dept => !cloudDepts.includes(dept));
-      const deptPromises = deptsToUpload.map(dept => {
-        return setDoc(doc(db, "departments", dept), { name: dept });
-      });
-
-      // 4. Sync Logs
-      const logSnap = await getDocs(collection(db, "alcohol_logs"));
-      const cloudLogs: AlcoholTestLog[] = [];
-      logSnap.forEach((docSnap) => {
-        cloudLogs.push(docSnap.data() as AlcoholTestLog);
-      });
-
-      const localLogsStr = localStorage.getItem("alcohol_logs");
-      const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
-
-      const mergedLogsMap = new Map<string, AlcoholTestLog>();
-      cloudLogs.forEach(log => mergedLogsMap.set(log.id, log));
-
-      const logsToUpload: AlcoholTestLog[] = [];
-      localLogs.forEach(localLog => {
-        if (!mergedLogsMap.has(localLog.id)) {
-          mergedLogsMap.set(localLog.id, localLog);
-          logsToUpload.push(localLog);
-        }
-      });
-
-      const finalLogs = Array.from(mergedLogsMap.values());
-      finalLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setLogs(finalLogs);
-      logsRef.current = finalLogs;
-      saveLogsToLocalStorage(finalLogs);
-
-      const logPromises = logsToUpload.map(log => {
-        return setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log)));
-      });
-
-      // Execute all write promises
+      const activeDepts = fetchedDepts.filter(d => !(deletedMap.has(d) && deletedMap.get(d) === "department"));
+      const baseLocalDepts = departmentsRef.current.length > 0 ? departmentsRef.current : localDepts;
+      const mergedDeptsSet = new Set([...activeDepts, ...baseLocalDepts]);
+      const finalMergedDepts = Array.from(mergedDeptsSet).filter(d => !(deletedMap.has(d) && deletedMap.get(d) === "department"));
+      departmentsRef.current = finalMergedDepts;
+      setDepartments(finalMergedDepts);
+      safeLocalStorageSetItem("alcohol_departments", JSON.stringify(finalMergedDepts));
+      const deptUploadPromises = finalMergedDepts
+        .filter(d => !activeDepts.includes(d))
+        .map(d => setDoc(doc(db, "departments", d), { name: d }));
+        
       await Promise.all([
-        ...empPromises,
-        ...supPromises,
-        ...deptPromises,
-        ...logPromises
+        ...logUploadPromises,
+        ...empUploadPromises,
+        ...supUploadPromises,
+        ...deptUploadPromises
       ]);
-
+      
       setDbStatus("connected");
-      setDbErrorMessage(null);
+      setIsDbLoading(false);
       if (!isSilent) {
-        showNotification(
-          `ผสานและซิงก์ข้อมูลสำเร็จ! พนักงาน: ${finalEmps.length} คน, ประวัติเป่า: ${finalLogs.length} รายการ (ซิงค์อัปโหลดเพิ่มไปยังระบบคลาวด์เรียบร้อย)`,
-          "success",
-          "ซิงก์คลาวด์สมบูรณ์"
-        );
+        showNotification("ซิงค์และเชื่อมโยงฐานข้อมูลคลาวด์เสร็จสมบูรณ์ ข้อมูลเป็นปัจจุบันแล้ว", "success", "ซิงค์ข้อมูลสำเร็จ");
       }
     } catch (err) {
-      console.error("Error during manual bi-directional merge & sync:", err);
-      setDbStatus("error");
-      setDbErrorMessage(err instanceof Error ? err.message : String(err));
-      if (!isSilent) {
-        showNotification("การผสานและซิงก์ข้อมูลบางรายการล้มเหลว กรุณาตรวจสอบสัญญาณอินเทอร์เน็ต", "error", "ซิงค์ล้มเหลว");
-      }
-    } finally {
+      console.error("Error manual sync all:", err);
+      setDbStatus("offline");
       setIsDbLoading(false);
+      if (!isSilent) {
+        showNotification("สลับไปใช้ฐานข้อมูลภายในเครื่องชั่วคราว การซิงค์จะพยายามทำต่อไปเมื่อเครือข่ายพร้อม", "info", "ซิงค์ข้อมูลไม่สำเร็จ");
+      }
     }
   };
 
-  // Mobile app resume / browser tab focused real-time auto-synchronization
+  // Auto-sync upon tab focus / visibility change (e.g. app resume on phone)
   useEffect(() => {
     const handleFocusResume = () => {
-      if (document.visibilityState === "visible") {
-        console.log("App became visible/focused. Syncing real-time database now...");
-        
-        // Rollover detection on mobile wake-up
         const now = new Date();
         const lastSystem = lastSystemDateRef.current;
         const partsLastSystem = getBangkokDateParts(lastSystem);
@@ -2277,7 +2374,6 @@ export default function App() {
             console.warn("Visibility auto-sync silent warning:", err);
           });
         }
-      }
     };
 
     document.addEventListener("visibilitychange", handleFocusResume);
@@ -2345,92 +2441,370 @@ export default function App() {
           return;
         }
         
-        const data = new Uint8Array(result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: "array" });
+        let workbook;
+        if (file.name.toLowerCase().endsWith(".csv")) {
+          const arrayBuffer = result as ArrayBuffer;
+          
+          // Decode as UTF-8 first
+          let text = new TextDecoder("utf-8").decode(arrayBuffer);
+          let parsedOK = false;
+          
+          const hasKeywords = (t: string) => {
+            const lower = t.toLowerCase();
+            return lower.includes("ชื่อ") || lower.includes("แผนก") || lower.includes("รหัส") || lower.includes("ตำแหน่ง") || lower.includes("สังกัด") ||
+                   lower.includes("name") || lower.includes("id") || lower.includes("dept") || lower.includes("role");
+          };
+          
+          if (hasKeywords(text)) {
+            workbook = XLSX.read(text, { type: "string" });
+            parsedOK = true;
+          } else {
+            // Check if there are garbled characters or if we should decode with CP874 (windows-874 / TIS-620)
+            try {
+              const tisText = new TextDecoder("windows-874").decode(arrayBuffer);
+              if (hasKeywords(tisText)) {
+                workbook = XLSX.read(tisText, { type: "string" });
+                parsedOK = true;
+              }
+            } catch (err) {
+              console.warn("TIS-620 decoding failed, fallback to standard", err);
+            }
+          }
+          
+          if (!parsedOK) {
+            workbook = XLSX.read(new Uint8Array(arrayBuffer), { type: "array" });
+          }
+        } else {
+          const array = new Uint8Array(result as ArrayBuffer);
+          workbook = XLSX.read(array, { type: "array" });
+        }
+
+        if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+          setExcelFileError("ไม่พบชีทข้อมูลหรือความผิดพลาดในการประมวลผลไฟล์โครงสร้าง Excel");
+          return;
+        }
+
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
-        
+        if (!sheet) {
+          setExcelFileError("ไม่พบข้อมูลชีทที่ถูกต้องในไฟล์");
+          return;
+        }
+
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
+        if (!rows || rows.length === 0) {
+          setExcelFileError("ไม่พบข้อมูลพนักงานในไฟล์ หรือไฟล์ว่างเปล่า");
+          return;
+        }
+
+        // Dynamic header row detection by matching expected columns / keywords
+        let headerRowIndex = -1;
+        let maxMatchCount = 0;
+
+        for (let i = 0; i < Math.min(rows.length, 15); i++) {
+          const row = rows[i];
+          if (!row || row.length === 0) continue;
+
+          let matchCount = 0;
+          for (const cell of row) {
+            if (cell === null || cell === undefined) continue;
+            const s = String(cell).toLowerCase().trim().replace(/[\s\-\_\*]/g, "");
+            if (
+              s.includes("ชื่อ") || s.includes("name") || s.includes("fullname") ||
+              s.includes("รหัส") || s.includes("id") || s.includes("code") ||
+              s.includes("แผนก") || s.includes("สังกัด") || s.includes("dept") || s.includes("department") || s.includes("ฝ่าย") || s.includes("หน่วยงาน") ||
+              s.includes("ตำแหน่ง") || s.includes("role") || s.includes("position")
+            ) {
+              matchCount++;
+            }
+          }
+
+          if (matchCount > maxMatchCount && matchCount >= 1) {
+            maxMatchCount = matchCount;
+            headerRowIndex = i;
+          }
+        }
+
+        let jsonData: any[] = [];
+        if (headerRowIndex !== -1) {
+          const headers = rows[headerRowIndex].map(h => String(h ?? "").trim());
+          const dataRows = rows.slice(headerRowIndex + 1);
+
+          jsonData = dataRows.map(row => {
+            const rowObj: any = {};
+            headers.forEach((header, colIdx) => {
+              if (header) {
+                rowObj[header] = row[colIdx];
+              }
+            });
+            return rowObj;
+          }).filter(obj => {
+            // Filter out empty rows
+            return Object.values(obj).some(v => v !== null && v !== undefined && String(v).trim() !== "");
+          });
+        } else {
+          // Fallback to standard sheet_to_json
+          jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
+        }
+
         if (jsonData.length === 0) {
           setExcelFileError("ไม่พบข้อมูลพนักงานในไฟล์ หรือไฟล์ว่างเปล่า");
           return;
         }
-        
+
         const tempParsed: Employee[] = [];
         const defaultColors = ["%230284c7", "%234f46e5", "%230891b2", "%230d9488", "%23ea580c"];
         let skippedDuplicateCount = 0;
-        
+
         for (let i = 0; i < jsonData.length; i++) {
           const row = jsonData[i];
-          
+
+          let prefixVal = "";
           let nameVal = "";
+          let firstNameVal = "";
+          let lastNameVal = "";
           let idVal = "";
           let deptVal = "";
           let roleVal = "";
           let photoVal = "";
-          
+
           for (const key of Object.keys(row)) {
-            const cleanKey = key.trim().toLowerCase();
-            
-            if (cleanKey.includes("ชื่อ") || cleanKey.includes("name")) {
-              nameVal = String(row[key] || "").trim();
-            } else if (cleanKey.includes("รหัส") || cleanKey.includes("id")) {
-              idVal = String(row[key] || "").trim();
-            } else if (cleanKey.includes("แผนก") || cleanKey.includes("สังกัด") || cleanKey.includes("dept") || cleanKey.includes("department")) {
-              deptVal = String(row[key] || "").trim();
-            } else if (cleanKey.includes("ตำแหน่ง") || cleanKey.includes("หน้าที่") || cleanKey.includes("role") || cleanKey.includes("position")) {
-              roleVal = String(row[key] || "").trim();
-            } else if (cleanKey.includes("รูป") || cleanKey.includes("ภาพ") || cleanKey.includes("photo") || cleanKey.includes("image") || cleanKey.includes("avatar")) {
-              photoVal = String(row[key] || "").trim();
+            const cleanKey = key.trim().toLowerCase().replace(/[\s\-\_\*]/g, ""); // strip space, dash, underscore, asterisks
+            const val = String(row[key] ?? "").trim();
+            if (!val) continue;
+
+            // Check matches for name synonyms
+            if (
+              cleanKey === "ชื่อนามสกุล" ||
+              cleanKey === "ชื่อสกุล" ||
+              cleanKey === "ชื่อจริงนามสกุล" ||
+              cleanKey === "ชื่อจริงและนามสกุล" ||
+              cleanKey === "ชื่อและนามสกุล" ||
+              cleanKey === "ชื่อผู้รับตรวจ" ||
+              cleanKey === "ชื่อพนักงาน" ||
+              cleanKey === "รายชื่อพนักงาน" ||
+              cleanKey === "รายชื่อ" ||
+              cleanKey === "fullname" ||
+              cleanKey === "displayname" ||
+              cleanKey === "employee" ||
+              cleanKey === "member" ||
+              cleanKey === "staff"
+            ) {
+              nameVal = val;
+            } else if (
+              cleanKey === "ชื่อ" ||
+              cleanKey === "ชื่อจริง" ||
+              cleanKey === "firstname" ||
+              cleanKey === "fname"
+            ) {
+              firstNameVal = val;
+            } else if (
+              cleanKey === "นามสกุล" ||
+              cleanKey === "lastname" ||
+              cleanKey === "lname" ||
+              cleanKey === "surname"
+            ) {
+              lastNameVal = val;
+            } else if (
+              cleanKey === "คำนำหน้า" ||
+              cleanKey === "คำนำหน้าชื่อ" ||
+              cleanKey === "prefix"
+            ) {
+              prefixVal = val;
+            } else if (
+              cleanKey.includes("รหัสพนักงาน") ||
+              cleanKey.includes("รหัสประจำตัว") ||
+              cleanKey === "รหัส" ||
+              cleanKey === "id" ||
+              cleanKey === "empid" ||
+              cleanKey === "employeeid" ||
+              cleanKey === "code" ||
+              cleanKey === "staffid"
+            ) {
+              idVal = val;
+            } else if (
+              cleanKey.includes("แผนก") ||
+              cleanKey.includes("สังกัด") ||
+              cleanKey.includes("ฝ่าย") ||
+              cleanKey.includes("หน่วยงาน") ||
+              cleanKey.includes("กลุ่ม") ||
+              cleanKey.includes("กอง") ||
+              cleanKey === "dept" ||
+              cleanKey === "department" ||
+              cleanKey === "section" ||
+              cleanKey === "division"
+            ) {
+              deptVal = val;
+            } else if (
+              cleanKey.includes("ตำแหน่ง") ||
+              cleanKey.includes("หน้าที่") ||
+              cleanKey === "role" ||
+              cleanKey === "position" ||
+              cleanKey === "title"
+            ) {
+              roleVal = val;
+            } else if (
+              cleanKey.includes("รูปถ่าย") ||
+              cleanKey.includes("รูปภาพ") ||
+              cleanKey === "รูป" ||
+              cleanKey === "ภาพ" ||
+              cleanKey === "photo" ||
+              cleanKey === "image" ||
+              cleanKey === "avatar" ||
+              cleanKey === "picture" ||
+              cleanKey === "img"
+            ) {
+              photoVal = val;
             }
           }
-          
+
+          // Combine firstNameVal and lastNameVal if nameVal is not found
           if (!nameVal) {
-            const values = Object.values(row).map(v => String(v || "").trim()).filter(Boolean);
+            if (firstNameVal && lastNameVal) {
+              nameVal = `${firstNameVal} ${lastNameVal}`;
+            } else if (firstNameVal) {
+              nameVal = firstNameVal;
+            } else if (lastNameVal) {
+              nameVal = lastNameVal;
+            }
+          }
+
+          // If nameVal is still empty, let's do fuzzy matching
+          if (!nameVal) {
+            for (const key of Object.keys(row)) {
+              const cleanKey = key.trim().toLowerCase();
+              const val = String(row[key] ?? "").trim();
+              if (
+                cleanKey.includes("ชื่อ") ||
+                cleanKey.includes("name") ||
+                cleanKey.includes("fullname") ||
+                cleanKey.includes("พนักงาน") ||
+                cleanKey.includes("รายชื่อ")
+              ) {
+                if (!cleanKey.includes("รหัส") && !cleanKey.includes("รูป") && !cleanKey.includes("ภาพ") && !cleanKey.includes("แผนก") && !cleanKey.includes("ฝ่าย") && !cleanKey.includes("ตำแหน่ง")) {
+                  nameVal = val;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Fallback if still empty
+          if (!nameVal) {
+            const values = Object.values(row).map(v => String(v ?? "").trim()).filter(Boolean);
             if (values.length === 1) {
               nameVal = values[0];
             } else if (values.length > 1) {
-              const potentialName = values.find(v => 
-                v !== idVal && 
-                v !== deptVal && 
-                v !== roleVal && 
-                isNaN(Number(v)) && 
+              const potentialName = values.find(v =>
+                v !== idVal &&
+                v !== deptVal &&
+                v !== roleVal &&
+                isNaN(Number(v)) &&
                 v.length >= 2
               );
               nameVal = potentialName || values.find(v => v !== idVal) || values[0];
             }
           }
-          
+
           if (!nameVal) {
             continue;
           }
-          
+
+          // Filter out header repeat as data or empty name
+          if (
+            nameVal === "ชื่อ-นามสกุล *" ||
+            nameVal === "ชื่อ-นามสกุล" ||
+            nameVal === "ชื่อ" ||
+            nameVal === "fullname" ||
+            nameVal.includes("ดาวน์โหลดแบบฟอร์ม") ||
+            nameVal.toLowerCase().includes("total") ||
+            nameVal.includes("รวมทั้งหมด")
+          ) {
+            continue;
+          }
+
+          // Prefix handling
+          if (prefixVal && nameVal && !nameVal.startsWith(prefixVal)) {
+            nameVal = `${prefixVal}${nameVal}`;
+          }
+
           if (!deptVal) {
+            for (const key of Object.keys(row)) {
+              const cleanKey = key.trim().toLowerCase();
+              if (
+                cleanKey.includes("แผนก") ||
+                cleanKey.includes("สังกัด") ||
+                cleanKey.includes("ฝ่าย") ||
+                cleanKey.includes("กลุ่ม") ||
+                cleanKey.includes("กอง") ||
+                cleanKey.includes("dept") ||
+                cleanKey.includes("group")
+              ) {
+                deptVal = String(row[key] ?? "").trim();
+                break;
+              }
+            }
+          }
+
+          if (!deptVal || deptVal === "แผนก/สังกัด *") {
             deptVal = "อื่นๆ (บุคคลภายนอก/แขกผู้มาติดต่อ)";
           }
-          
+
           if (!roleVal) {
+            for (const key of Object.keys(row)) {
+              const cleanKey = key.trim().toLowerCase();
+              if (cleanKey.includes("ตำแหน่ง") || cleanKey.includes("role") || cleanKey.includes("position")) {
+                roleVal = String(row[key] ?? "").trim();
+                break;
+              }
+            }
+          }
+
+          if (!roleVal || roleVal === "ตำแหน่ง") {
             roleVal = "พนักงานทั่วไป";
           }
-          
+
           if (!idVal) {
+            for (const key of Object.keys(row)) {
+              const cleanKey = key.trim().toLowerCase();
+              if (cleanKey.includes("รหัส") || cleanKey.includes("id") || cleanKey.includes("code")) {
+                idVal = String(row[key] ?? "").trim();
+                break;
+              }
+            }
+          }
+
+          if (!idVal || idVal.includes("รหัสพนักงาน")) {
             idVal = `EMP-${Math.floor(100000 + Math.random() * 900000)}`;
           }
-          
+
+          // Clean idVal and sanitize any slashes/backslashes to ensure safe Firestore document paths
+          idVal = idVal.trim().replace(/[\/\\]/g, "-");
+
           // Check if already in tempParsed (to avoid duplicate entries in the excel sheet itself)
           const isDuplicateInExcel = tempParsed.some(
             emp => (idVal && emp.id.trim().toLowerCase() === idVal.trim().toLowerCase()) ||
                    emp.name.trim().toLowerCase() === nameVal.trim().toLowerCase()
           );
-          
+
           if (isDuplicateInExcel) {
             skippedDuplicateCount++;
             continue; // Skip duplicate within Excel itself
           }
-          
+
           const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
           const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${idVal}</text></svg>`);
-          
+
+          if (!photoVal) {
+            for (const key of Object.keys(row)) {
+              const cleanKey = key.trim().toLowerCase();
+              if (cleanKey.includes("รูป") || cleanKey.includes("ภาพ") || cleanKey.includes("photo") || cleanKey.includes("image")) {
+                photoVal = String(row[key] ?? "").trim();
+                break;
+              }
+            }
+          }
+
           let finalPhoto = fallbackPhoto;
           if (photoVal) {
             if (photoVal.startsWith("data:image/") || photoVal.startsWith("http://") || photoVal.startsWith("https://") || photoVal.startsWith("blob:")) {
@@ -2442,7 +2816,7 @@ export default function App() {
               finalPhoto = photoVal;
             }
           }
-          
+
           tempParsed.push({
             id: idVal,
             name: nameVal,
@@ -2451,7 +2825,7 @@ export default function App() {
             photo: finalPhoto
           });
         }
-        
+
         if (tempParsed.length === 0) {
           if (skippedDuplicateCount > 0) {
             setExcelFileError(`ไม่พบรายชื่อในไฟล์ หรือรายชื่อทั้งหมดซ้ำซ้อนภายในไฟล์เอง`);
@@ -2606,7 +2980,7 @@ export default function App() {
       ...targetExportLogs.map(log => {
         const dateStr = new Date(log.timestamp).toLocaleString("th-TH").replace(/,/g, "");
         const statusStr = log.isLeave ? "ลา/ไม่ได้ตรวจ" : (log.isPassed ? "ผ่านเกณฑ์" : "ไม่ผ่านเกณฑ์");
-        const symptomsStr = log.isLeave ? "ลากิจ/ลาป่วย/ไม่ได้ตรวจคัดกรอง" : log.symptoms.join("; ");
+        const symptomsStr = log.isLeave ? (log.symptoms && log.symptoms.length > 0 ? log.symptoms.join("; ") : "ลากิจ/ลาป่วย/ไม่ได้ตรวจคัดกรอง") : log.symptoms.join("; ");
         const attemptInfo = getLogAttemptInfo(log.id);
         const attemptStr = log.isLeave ? "ไม่ได้เป่าตรวจ" : `ครั้งที่ ${attemptInfo.attempt}${attemptInfo.attempt > 1 ? " (แก้ตัว)" : ""}`;
         const alcoholLevelVal = log.isLeave ? "ไม่ได้ตรวจ" : log.alcoholLevel;
@@ -2676,7 +3050,7 @@ export default function App() {
       const dateStr = new Date(log.timestamp).toLocaleString("th-TH").replace(/,/g, "");
       const statusClass = log.isLeave ? "bg-leave" : (log.isPassed ? "bg-pass" : "bg-fail");
       const statusStr = log.isLeave ? "ลา/ไม่ได้ตรวจ" : (log.isPassed ? "ผ่านเกณฑ์" : "ไม่ผ่านเกณฑ์");
-      const symptomsStr = log.isLeave ? "ลากิจ/ลาป่วย/ไม่ได้ตรวจคัดกรอง" : log.symptoms.join("; ");
+      const symptomsStr = log.isLeave ? (log.symptoms && log.symptoms.length > 0 ? log.symptoms.join("; ") : "ลากิจ/ลาป่วย/ไม่ได้ตรวจคัดกรอง") : log.symptoms.join("; ");
       const attemptInfo = getLogAttemptInfo(log.id);
       const attemptStr = log.isLeave ? "ไม่ได้เป่าตรวจ" : `ครั้งที่ ${attemptInfo.attempt}${attemptInfo.attempt > 1 ? " (แก้ตัว)" : ""}`;
       const alcoholLevelVal = log.isLeave ? "ไม่ได้ตรวจ" : log.alcoholLevel;
@@ -5271,12 +5645,16 @@ export default function App() {
 
                           {/* File input area */}
                           <div className="space-y-2">
-                            <label className="block border-2 border-dashed border-slate-200 hover:border-emerald-400 rounded-xl p-3.5 text-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 transition-all group">
+                            <label 
+                              htmlFor="excel-file-upload-input"
+                              className="block border-2 border-dashed border-slate-200 hover:border-emerald-400 rounded-xl p-3.5 text-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 transition-all group"
+                            >
                               <input
+                                id="excel-file-upload-input"
                                 type="file"
                                 accept=".xlsx,.xls,.csv"
                                 onChange={handleExcelImport}
-                                className="hidden"
+                                className="sr-only"
                               />
                               <Upload size={18} className="mx-auto text-slate-400 group-hover:text-emerald-600 transition mb-1" />
                               <span className="text-[10px] font-sans font-bold text-slate-600 block group-hover:text-emerald-700 transition">
@@ -5312,7 +5690,7 @@ export default function App() {
                                 ค้นหารายชื่อ ตรวจสอบสถานะ แก้ไขข้อมูลพนักงาน หรือทำการลบพนักงาน
                               </p>
                             </div>
-                            {/* Stats, Delete all, and Merge Sync */}
+                             {/* Stats, Delete all, and Merge Sync */}
                             <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
                               <span className="text-[10px] font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100/50">
                                 ทั้งหมด {employees.length} คน
@@ -5320,12 +5698,23 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={handleMergeAndSyncAll}
-                                className="text-[10px] font-sans font-bold text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2.5 py-1 rounded-lg border border-emerald-200 hover:border-emerald-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                                className="text-[10px] font-sans font-bold text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2.5 py-1 rounded-lg border border-emerald-200 hover:border-emerald-600 transition flex items-center gap-1 cursor-pointer shadow-sm animate-pulse-once"
                                 title="ผสานรวมและซิงก์ข้อมูลพนักงานและประวัติระหว่างเครื่องนี้กับคลาวด์ทันที เพื่อให้ข้อมูลคอมพิวเตอร์และมือถือเป็นชุดเดียวกัน"
                               >
                                 <RefreshCw size={11} className={isDbLoading ? "animate-spin" : ""} />
-                                {isDbLoading ? "กำลังผสานรวม..." : "ผสานข้อมูลข้ามอุปกรณ์ (Sync)"}
+                                {isDbLoading ? "กำลังผสานรวม..." : "ซิงก์ข้อมูลกับคลาวด์ (Sync)"}
                               </button>
+                              
+                              <button
+                                type="button"
+                                onClick={handleRestoreDefaultEmployees}
+                                className="text-[10px] font-sans font-bold text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2.5 py-1 rounded-lg border border-indigo-200 hover:border-indigo-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
+                                title="นำเข้ารายชื่อพนักงานเริ่มต้นของระบบกลับเข้าสู่ระบบอีกครั้ง"
+                              >
+                                <Plus size={11} />
+                                ดึงข้อมูลเริ่มต้นใหม่
+                              </button>
+
                               {employees.length > 0 && (
                                 <button
                                   type="button"
@@ -5421,6 +5810,36 @@ export default function App() {
                                 const matchesDept = empFilterDept === "ALL" || emp.department === empFilterDept;
                                 return matchesSearch && matchesDept;
                               });
+
+                              if (employees.length === 0) {
+                                return (
+                                  <div className="py-8 px-4 text-center font-sans bg-amber-50/50 border border-dashed border-amber-300 rounded-2xl space-y-3.5">
+                                    <div className="text-2xl animate-bounce">⚠️</div>
+                                    <div className="space-y-1">
+                                      <p className="text-xs font-bold text-amber-800">ไม่พบข้อมูลรายชื่อพนักงานในคลังสินค้า (ฐานข้อมูลพนักงานว่างเปล่า)</p>
+                                      <p className="text-[10px] text-slate-500 leading-relaxed">
+                                        ข้อมูลรายชื่อพนักงานอาจถูกลบออก หรืออุปกรณ์ยังไม่ได้ทำการดึงซิงค์ข้อมูลจากคลาวด์ลงมาใช้งาน
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-1">
+                                      <button
+                                        type="button"
+                                        onClick={handleRestoreDefaultEmployees}
+                                        className="w-full sm:w-auto px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-sans font-bold rounded-xl transition cursor-pointer shadow-sm hover:shadow flex items-center justify-center gap-1.5 active:scale-95"
+                                      >
+                                        <Plus size={13} /> โหลดรายชื่อพนักงานเริ่มต้นใหม่ (10 คน)
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={handleMergeAndSyncAll}
+                                        className="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-sans font-bold rounded-xl transition cursor-pointer shadow-sm hover:shadow flex items-center justify-center gap-1.5 active:scale-95"
+                                      >
+                                        <RefreshCw size={13} className={isDbLoading ? "animate-spin" : ""} /> ซิงค์ดึงข้อมูลจาก Cloud
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              }
 
                               if (filteredList.length === 0) {
                                 return (
@@ -6270,7 +6689,7 @@ export default function App() {
                             <div className="text-right flex flex-col justify-center">
                               {log.isLeave ? (
                                 <span className="font-sans text-xs font-bold text-amber-600 block leading-tight">
-                                  ลากิจ / ลาป่วย
+                                  {log.symptoms && log.symptoms[0] ? log.symptoms[0] : "ลากิจ / ลาป่วย"}
                                 </span>
                               ) : (
                                 <span className={`font-mono text-base font-bold tracking-tight block ${log.isPassed ? "text-emerald-600" : "text-rose-600 font-bold"}`}>
@@ -7106,7 +7525,7 @@ export default function App() {
                             const statusColor = log.isLeave ? "text-amber-700 bg-amber-50" : (log.isPassed ? "text-emerald-700 bg-emerald-50" : "text-red-700 bg-red-50");
                             const attemptInfo = getLogAttemptInfo(log.id);
                             const attemptStr = log.isLeave ? "" : `(ครั้งที่ ${attemptInfo.attempt})`;
-                            const symptomsStr = log.isLeave ? "ไม่ได้ตรวจคัดกรองเนื่องจากลางาน" : log.symptoms.join("; ");
+                            const symptomsStr = log.isLeave ? (log.symptoms && log.symptoms.length > 0 ? log.symptoms.join("; ") : "ไม่ได้ตรวจคัดกรองเนื่องจากลางาน") : log.symptoms.join("; ");
                             const notesText = log.notes ? `[หมายเหตุ: ${log.notes}]` : "";
 
                             return (

@@ -430,6 +430,109 @@ export default function UserManualSlides({ isOpen, onClose, companyName = "ส�
     },
     {
       id: 4,
+      title: "การนำเข้ารายชื่อพนักงานด้วยไฟล์ Excel / CSV",
+      subtitle: "ขั้นตอนอัปโหลดทะเบียนพนักงานเข้าระบบพร้อมกันหลายคนอย่างรวดเร็วและถูกต้อง",
+      badge: "การนำเข้าพนักงาน (EXCEL/CSV IMPORT SYSTEM)",
+      icon: <FileSpreadsheet size={32} className="text-white" />,
+      bgGradient: "from-emerald-600 via-teal-700 to-indigo-950",
+      colorTheme: "emerald",
+      content: (
+        <div className="space-y-3.5 font-sans text-slate-700">
+          <p className="text-sm leading-relaxed">
+            เพิ่มความสะดวกโดยนำเข้าไฟล์พนักงานแทนการลงทะเบียนรายบุคคลทีละคน เหมาะสำหรับองค์กรที่มีพนักงานจำนวนมาก:
+          </p>
+
+          <div className="space-y-3">
+            <div className="flex gap-2.5">
+              <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 font-mono">
+                1
+              </div>
+              <div>
+                <span className="block text-xs font-bold text-slate-800">ดาวน์โหลดเทมเพลตมาตรฐาน</span>
+                <p className="text-[11px] text-slate-500">คลิกปุ่ม <strong className="text-emerald-700">"แบบฟอร์ม"</strong> สีเขียว เพื่อดาวน์โหลดไฟล์เทมเพลต Excel (.xlsx) ที่ระบุหัวข้อคอลัมน์ภาษาไทยอย่างถูกต้อง</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2.5">
+              <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 font-mono">
+                2
+              </div>
+              <div>
+                <span className="block text-xs font-bold text-slate-800">กรอกข้อมูลพนักงานลงในไฟล์</span>
+                <p className="text-[11px] text-slate-500">
+                  • <strong>รหัสพนักงาน:</strong> หากเว้นว่างไว้ ระบบจะสุ่มรหัสรันนิ่งให้เองอัตโนมัติ<br />
+                  • <strong>ชื่อ-นามสกุล * & แผนก/สังกัด *:</strong> บังคับระบุเพื่อใช้ในการกรองวิเคราะห์ข้อมูล<br />
+                  • <strong>ตำแหน่ง & รูปถ่าย (ลิงก์/Base64):</strong> ใส่เป็นข้อมูลประกอบเพิ่มเติมได้
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-2.5">
+              <div className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5 font-mono">
+                3
+              </div>
+              <div>
+                <span className="block text-xs font-bold text-slate-800">อัปโหลด เลือกรูปแบบเขียนทับ และกดยืนยัน</span>
+                <p className="text-[11px] text-slate-500">คลิกอัปโหลดไฟล์ เลือกรูปแบบการบันทึก: <strong>"เขียนทับข้อมูลเดิม (Overwrite)"</strong> เพื่ออัปเดตแผนก/รูปถ่าย หรือ <strong>"ข้ามข้อมูลซ้ำ (Skip)"</strong> จากนั้นตรวจสอบตารางสรุปพรีวิวและกดปุ่มเซฟคลาวด์</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      ),
+      mockup: (
+        <div className="w-full h-full bg-slate-900 rounded-xl border border-slate-700 p-3 shadow-inner flex flex-col font-sans text-slate-200">
+          <div className="flex items-center justify-between pb-1.5 border-b border-slate-800">
+            <span className="text-[11px] font-black text-emerald-400">📊 หน้าพรีวิวตรวจสอบก่อนนำเข้า</span>
+            <span className="text-[9px] bg-emerald-500/10 text-emerald-400 px-1 py-0.2 rounded font-mono">Ready to Import</span>
+          </div>
+
+          <div className="flex-1 overflow-hidden flex flex-col pt-2.5 space-y-2">
+            {/* Fake Excel Table Previews */}
+            <div className="border border-slate-700 rounded overflow-hidden">
+              <table className="w-full text-left border-collapse text-[8px]">
+                <thead>
+                  <tr className="bg-slate-800 text-slate-300 border-b border-slate-700">
+                    <th className="p-1">รหัสพนักงาน</th>
+                    <th className="p-1">ชื่อ-นามสกุล</th>
+                    <th className="p-1">แผนก/สังกัด</th>
+                    <th className="p-1">ผลประเมิน</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="border-b border-slate-800 text-slate-400">
+                    <td className="p-1 font-mono">EMP-9001</td>
+                    <td className="p-1 text-white">นายสมบัติ ดีงาม</td>
+                    <td className="p-1">แผนกจัดส่ง</td>
+                    <td className="p-1 text-emerald-400 font-bold">✓ พร้อมนำเข้า</td>
+                  </tr>
+                  <tr className="border-b border-slate-800 text-slate-400">
+                    <td className="p-1 font-mono">EMP-9002</td>
+                    <td className="p-1 text-white">นางสาววรรณา รักษ์ดี</td>
+                    <td className="p-1">ฝ่ายผลิต</td>
+                    <td className="p-1 text-amber-400 font-bold">⚠️ ซ้ำ (รอเขียนทับ)</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* Simulated Options controls */}
+            <div className="bg-slate-800/60 border border-slate-700/50 rounded p-1.5 text-[8.5px] space-y-1">
+              <div className="flex justify-between items-center text-slate-400">
+                <span>หากข้อมูลซ้ำในระบบ:</span>
+                <span className="text-white font-bold bg-emerald-500/10 border border-emerald-500/30 px-1 rounded-sm">เขียนทับ (Overwrite)</span>
+              </div>
+              <p className="text-[7.5px] text-slate-500">ระบบจะอัปเดตข้อมูลพนักงานชุดใหม่ลงคลาวด์และรักษาข้อมูลเดิม</p>
+            </div>
+
+            <button type="button" className="w-full bg-emerald-600 text-white font-bold py-1 rounded text-center text-[9px] cursor-default mt-auto">
+              🟢 ยืนยันนำเข้ารายชื่อพนักงาน (2 ราย)
+            </button>
+          </div>
+        </div>
+      )
+    },
+    {
+      id: 5,
       title: "การจัดทำรายงานและส่งออกข้อมูล",
       subtitle: "พิมพ์เอกสารใบรับรองผลอย่างเป็นทางการ และดาวน์โหลดไฟล์ประวัติแบบ Excel",
       badge: "รายงานและความโปร่งใส (REPORTS & TRANSPARENCY)",
@@ -510,7 +613,7 @@ export default function UserManualSlides({ isOpen, onClose, companyName = "ส�
       )
     },
     {
-      id: 5,
+      id: 6,
       title: "การแก้ปัญหาเบื้องต้น & การตั้งค่าความปลอดภัย",
       subtitle: "วิธีกำหนดค่าระดับแอลกอฮอล์ที่ยอมรับ และระบบความโปร่งใสล็อกพาสโค้ด",
       badge: "ความปลอดภัยขั้นสูง (SECURITY & PARAMETERS)",
