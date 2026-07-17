@@ -37,7 +37,9 @@ import {
   Edit,
   Pencil,
   Upload,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Mic,
+  MicOff
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { AlcoholTestLog, AppSettings, Employee } from "./types";
@@ -427,8 +429,14 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
 
+  // Voice Search / Speech Recognition states
+  const [activeVoiceSearchInput, setActiveVoiceSearchInput] = useState<"employeeName" | "empSearchQuery" | null>(null);
+  const [voiceSearchStatus, setVoiceSearchStatus] = useState<string | null>(null);
+  const [isVoiceSupported, setIsVoiceSupported] = useState<boolean>(true);
+
   const hasNotifiedOffline = useRef(false);
   const hasNotifiedQuotaExceeded = useRef(false);
+  const recognitionRef = useRef<any>(null);
 
   const logsRef = useRef<AlcoholTestLog[]>([]);
   const employeesRef = useRef<Employee[]>([]);
@@ -2208,6 +2216,89 @@ export default function App() {
 
     return () => clearInterval(interval);
   }, [dbStatus, isDbLoading]);
+
+  const triggerVoiceSearch = (targetInput: "employeeName" | "empSearchQuery") => {
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      setIsVoiceSupported(false);
+      showNotification("เบราว์เซอร์ของคุณไม่รองรับการค้นหาด้วยเสียง กรุณาใช้ Chrome, Safari หรือ Edge", "error", "ไม่รองรับการค้นหาด้วยเสียง");
+      return;
+    }
+
+    // If already listening, stop it
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (err) {
+        console.warn("Error stopping active speech recognition:", err);
+      }
+      recognitionRef.current = null;
+      if (activeVoiceSearchInput === targetInput) {
+        setActiveVoiceSearchInput(null);
+        setVoiceSearchStatus(null);
+        return;
+      }
+    }
+
+    try {
+      const recognition = new SpeechRec();
+      recognition.lang = "th-TH";
+      recognition.continuous = false;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => {
+        setActiveVoiceSearchInput(targetInput);
+        setVoiceSearchStatus("listening");
+        showNotification("เริ่มค้นหาด้วยเสียงแล้ว... กรุณาพูดชื่อหรือรหัสพนักงาน", "info", "กำลังฟังเสียงของคุณ...");
+      };
+
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        if (transcript) {
+          const cleanTranscript = transcript.trim().replace(/\.$/, ""); // strip trailing periods
+          console.log(`[Voice Search] Success: "${cleanTranscript}"`);
+          
+          if (targetInput === "employeeName") {
+            setEmployeeName(cleanTranscript);
+            if (!isTestModePersonal) {
+              setShowEmployeeSuggestions(true);
+            }
+          } else if (targetInput === "empSearchQuery") {
+            setEmpSearchQuery(cleanTranscript);
+          }
+          
+          showNotification(`ได้ยินคำว่า: "${cleanTranscript}"`, "success", "บันทึกเสียงสำเร็จ");
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("[Voice Search] Error:", event.error);
+        if (event.error === "not-allowed") {
+          showNotification("กรุณาอนุญาตให้ระบบเข้าถึงไมโครโฟนในเบราว์เซอร์ของคุณ เพื่อใช้การค้นหาด้วยเสียง", "error", "ไม่สามารถเข้าถึงไมโครโฟน");
+        } else if (event.error === "no-speech") {
+          showNotification("ตรวจไม่พบเสียงพูด กรุณาลองใหม่อีกครั้ง", "warning", "ไม่พบเสียงพูด");
+        } else {
+          showNotification(`เกิดข้อผิดพลาดในการรับเสียง: ${event.error}`, "error", "ค้นหาด้วยเสียงล้มเหลว");
+        }
+        setVoiceSearchStatus("error");
+      };
+
+      recognition.onend = () => {
+        setActiveVoiceSearchInput(null);
+        setVoiceSearchStatus(null);
+        recognitionRef.current = null;
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error("[Voice Search] Init Error:", err);
+      showNotification("ไม่สามารถเริ่มต้นระบบค้นหาด้วยเสียงได้", "error", "เกิดข้อผิดพลาด");
+      setActiveVoiceSearchInput(null);
+      setVoiceSearchStatus(null);
+      recognitionRef.current = null;
+    }
+  };
 
   const handleDownloadExcelTemplate = () => {
     const templateData = [
@@ -4117,8 +4208,28 @@ export default function App() {
                           setShowEmployeeSuggestions(true);
                         }
                       }}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-slate-800 text-xs font-sans outline-none focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition shadow-inner"
+                      className={`w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 py-2 text-slate-800 text-xs font-sans outline-none focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition shadow-inner ${
+                        activeVoiceSearchInput === "employeeName" ? "pr-24" : "pr-10"
+                      }`}
                     />
+
+                    <button
+                      type="button"
+                      onClick={() => triggerVoiceSearch("employeeName")}
+                      className={`absolute inset-y-0 right-0 pr-3 flex items-center justify-center text-slate-400 hover:text-indigo-650 cursor-pointer transition-all ${
+                        activeVoiceSearchInput === "employeeName" ? "scale-105" : ""
+                      }`}
+                      title="ค้นหาด้วยเสียง"
+                    >
+                      {activeVoiceSearchInput === "employeeName" ? (
+                        <span className="flex items-center gap-1 bg-red-50 hover:bg-red-100 px-2 py-1 rounded-lg border border-red-200 text-[10px] text-red-600 font-bold font-sans animate-pulse">
+                          <Mic size={12} className="text-red-500" />
+                          <span>กำลังฟัง...</span>
+                        </span>
+                      ) : (
+                        <Mic size={14} className="hover:scale-110 transition-transform" />
+                      )}
+                    </button>
 
                     {/* Autocomplete Suggestions Box */}
                     {showEmployeeSuggestions && !isTestModePersonal && (
@@ -5783,17 +5894,36 @@ export default function App() {
                                 placeholder="ค้นหาชื่อ, รหัส, ตำแหน่ง..."
                                 value={empSearchQuery}
                                 onChange={(e) => setEmpSearchQuery(e.target.value)}
-                                className="w-full pl-7.5 pr-6 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-sans text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-indigo-500 transition"
+                                className={`w-full pl-7.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-sans text-slate-800 placeholder-slate-400 focus:bg-white focus:outline-none focus:border-indigo-500 transition ${
+                                  activeVoiceSearchInput === "empSearchQuery" ? "pr-24" : "pr-14"
+                                }`}
                               />
                               {empSearchQuery && (
                                 <button
                                   type="button"
                                   onClick={() => setEmpSearchQuery("")}
-                                  className="absolute inset-y-0 right-0 pr-2 flex items-center text-slate-400 hover:text-slate-600 text-[10px] font-bold cursor-pointer"
+                                  className={`absolute inset-y-0 ${
+                                    activeVoiceSearchInput === "empSearchQuery" ? "right-20" : "right-7"
+                                  } pr-1 flex items-center text-slate-400 hover:text-slate-600 text-[10px] font-bold cursor-pointer transition-all`}
                                 >
                                   ✕
                                 </button>
                               )}
+                              <button
+                                type="button"
+                                onClick={() => triggerVoiceSearch("empSearchQuery")}
+                                className="absolute inset-y-0 right-0 pr-2.5 flex items-center justify-center text-slate-400 hover:text-indigo-650 cursor-pointer transition-all"
+                                title="ค้นหาด้วยเสียง"
+                              >
+                                {activeVoiceSearchInput === "empSearchQuery" ? (
+                                  <span className="flex items-center gap-1 bg-red-50 hover:bg-red-100 px-1.5 py-0.5 rounded border border-red-200 text-[9px] text-red-600 font-bold font-sans animate-pulse">
+                                    <Mic size={10} className="text-red-500" />
+                                    <span>กำลังฟัง...</span>
+                                  </span>
+                                ) : (
+                                  <Mic size={12} className="hover:scale-110 transition-transform" />
+                                )}
+                              </button>
                             </div>
 
                             {/* Department filter select */}
