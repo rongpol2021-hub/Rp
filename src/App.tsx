@@ -39,7 +39,8 @@ import {
   Upload,
   FileSpreadsheet,
   Mic,
-  MicOff
+  MicOff,
+  LogOut
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { AlcoholTestLog, AppSettings, Employee } from "./types";
@@ -428,6 +429,19 @@ export default function App() {
   const [dbErrorMessage, setDbErrorMessage] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [showEmployeeSuggestions, setShowEmployeeSuggestions] = useState(false);
+  
+  // Password Login state
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem("app_logged_in") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [loginPasswordInput, setLoginPasswordInput] = useState<string>("");
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [showLoginPassword, setShowLoginPassword] = useState<boolean>(false);
+  const [showAdminPasscodeInSettings, setShowAdminPasscodeInSettings] = useState<boolean>(false);
 
   // Voice Search / Speech Recognition states
   const [activeVoiceSearchInput, setActiveVoiceSearchInput] = useState<"employeeName" | "empSearchQuery" | null>(null);
@@ -2217,6 +2231,37 @@ export default function App() {
     return () => clearInterval(interval);
   }, [dbStatus, isDbLoading]);
 
+  const handleLoginSubmit = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const correctPin = (settings.adminPasscode || "1234").trim();
+    if (loginPasswordInput.trim() === correctPin) {
+      setIsLoggedIn(true);
+      setLoginError(null);
+      setLoginPasswordInput("");
+      try {
+        sessionStorage.setItem("app_logged_in", "true");
+      } catch (err) {
+        console.warn("sessionStorage failed:", err);
+      }
+      showNotification("เข้าสู่ระบบสำเร็จ ยินดีต้อนรับเข้าใช้งานระบบ", "success", "สำเร็จ");
+    } else {
+      setLoginError("รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง");
+      showNotification("รหัสผ่านไม่ถูกต้อง กรุณาลองใหม่อีกครั้ง", "error", "เข้าสู่ระบบล้มเหลว");
+    }
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setLoginPasswordInput("");
+    setLoginError(null);
+    try {
+      sessionStorage.removeItem("app_logged_in");
+    } catch (err) {
+      console.warn("sessionStorage failed:", err);
+    }
+    showNotification("ออกจากระบบเรียบร้อยแล้ว", "info", "ออกจากระบบ");
+  };
+
   const triggerVoiceSearch = (targetInput: "employeeName" | "empSearchQuery") => {
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) {
@@ -3738,6 +3783,83 @@ export default function App() {
     );
   }
 
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 selection:bg-indigo-500/20 antialiased font-sans relative overflow-hidden">
+        {/* Decorative background grids/elements */}
+        <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/5 blur-3xl rounded-full pointer-events-none" />
+        <div className="absolute bottom-0 left-0 w-96 h-96 bg-rose-500/5 blur-3xl rounded-full pointer-events-none" />
+
+        <div className="w-full max-w-md bg-white border border-slate-200 p-6 md:p-8 rounded-3xl shadow-xl relative overflow-hidden">
+          {/* Subtle line decoration */}
+          <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
+          
+          <div className="flex flex-col items-center mb-6 text-center">
+            <div className="p-4 bg-indigo-600 rounded-2xl shadow-lg ring-8 ring-indigo-500/10 mb-4 text-white">
+              <Shield size={36} strokeWidth={2.5} />
+            </div>
+            <h1 className="text-lg sm:text-xl md:text-2xl font-black text-slate-800 uppercase font-sans leading-relaxed whitespace-nowrap">
+              บันทึกการเป่าแอลกอฮอล์รายวัน
+            </h1>
+            <p className="text-xs text-slate-500 font-medium font-sans mt-2">
+              {settings.companyName || "กรุณากรอกรหัสผ่านเพื่อยืนยันสิทธิ์เข้าใช้งาน"}
+            </p>
+          </div>
+
+          <form onSubmit={handleLoginSubmit} className="space-y-5">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 mb-2 uppercase flex items-center gap-1">
+                <Lock size={12} className="text-indigo-600" /> รหัสผ่านผู้ใช้งาน (Passcode / PIN)
+              </label>
+              <div className="relative">
+                <input
+                  type={showLoginPassword ? "text" : "password"}
+                  value={loginPasswordInput}
+                  onChange={(e) => {
+                    setLoginPasswordInput(e.target.value);
+                    if (loginError) setLoginError(null);
+                  }}
+                  placeholder="กรอกรหัสผ่านเข้าใช้งานระบบ..."
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-3 pr-10 py-3 text-slate-800 text-sm font-bold tracking-widest font-mono outline-none focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 transition shadow-inner"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword(!showLoginPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  {showLoginPassword ? <Eye size={16} /> : <Lock size={16} />}
+                </button>
+              </div>
+              {loginError && (
+                <p className="text-xs text-red-500 font-medium font-sans mt-2 flex items-center gap-1">
+                  <AlertCircle size={12} /> {loginError}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="w-full flex items-center justify-center gap-2 text-sm font-sans font-bold bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl transition cursor-pointer shadow-md active:scale-98"
+            >
+              <Unlock size={16} />
+              <span>เข้าสู่ระบบ (Sign In)</span>
+            </button>
+          </form>
+
+          <div className="mt-8 pt-5 border-t border-slate-100 text-center">
+            <p className="text-[10px] text-slate-400 font-sans">
+              * หากใช้งานครั้งแรก รหัสผ่านเริ่มต้นคือ <span className="font-bold font-mono text-slate-600 bg-slate-100 px-1 py-0.5 rounded">1234</span>
+            </p>
+            <p className="text-[10px] text-slate-400 font-sans mt-1">
+              ท่านสามารถแก้ไขหรือเปลี่ยนรหัสผ่านนี้ได้ตามใจชอบในหน้าเมนู "ตั้งค่าเกณฑ์คัดกรอง"
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div id="main-applet-root" className="min-h-screen bg-slate-50 text-slate-930 flex flex-col p-3 md:p-6 select-none selection:bg-indigo-500/20 antialiased font-sans">
       
@@ -3747,20 +3869,17 @@ export default function App() {
         <div className="absolute top-0 right-0 w-64 h-24 bg-indigo-500/5 blur-3xl rounded-full pointer-events-none" />
         <div className="absolute top-0 left-1/3 w-64 h-24 bg-rose-500/5 blur-3xl rounded-full pointer-events-none" />
 
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-indigo-600 rounded-xl shadow-md ring-4 ring-indigo-500/10">
+        <div className="flex items-start md:items-center gap-3">
+          <div className="p-3 bg-indigo-600 rounded-xl shadow-md ring-4 ring-indigo-500/10 shrink-0">
             <Shield size={26} className="text-white" strokeWidth={2.5} />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl md:text-2xl font-bold tracking-tight text-slate-800 font-sans uppercase">
+              <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-slate-800 font-sans uppercase leading-normal whitespace-nowrap">
                 บันทึกการเป่าแอลกอฮอล์รายวัน
               </h1>
-              <span className="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded font-mono uppercase font-semibold tracking-wider self-center">
-                Live SECURE
-              </span>
             </div>
-            <p className="text-xs text-slate-500 font-medium font-sans mt-0.5">
+            <p className="text-xs text-slate-500 font-medium font-sans mt-2.5">
               {settings.companyName}
             </p>
             <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -3819,11 +3938,11 @@ export default function App() {
         </div>
 
         {/* Dynamic Clock Timer, Sync Button, & Settings Toggle */}
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full md:w-auto">
+        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto md:justify-end">
           {/* Dynamic Clock */}
-          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-2 rounded-xl text-slate-600 font-mono text-xs w-full sm:w-auto shadow-inner">
+          <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3.5 py-2 rounded-xl text-slate-600 font-mono text-xs w-full sm:w-auto shadow-inner whitespace-nowrap shrink-0">
             <Clock size={14} className="text-indigo-600 shrink-0" />
-            <span>{time || "กำลังโหลดเวลา..."}</span>
+            <span className="whitespace-nowrap shrink-0">{time || "กำลังโหลดเวลา..."}</span>
           </div>
 
           {/* Real-time Force Sync Button */}
@@ -3831,15 +3950,15 @@ export default function App() {
             type="button"
             onClick={() => handleMergeAndSyncAll({ isSilent: false })}
             disabled={isDbLoading}
-            className={`flex items-center justify-center gap-1.5 text-xs font-sans font-bold py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm ${
+            className={`flex items-center justify-center gap-1.5 text-xs font-sans font-bold py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm whitespace-nowrap shrink-0 ${
               isDbLoading
                 ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                 : "bg-emerald-50 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200 hover:border-emerald-600"
             }`}
             title="กดเพื่อผสานรวมข้อมูลพนักงานและประวัติเป่าให้เป็นเวอร์ชันล่าสุดของวันนี้ทันทีข้ามทุกเครื่อง"
           >
-            <RefreshCw size={14} className={`text-emerald-600 ${isDbLoading ? "animate-spin text-slate-400" : ""}`} />
-            {isDbLoading ? "กำลังเชื่อมข้อมูล..." : "ซิงค์ด่วนข้ามเครื่อง (Sync)"}
+            <RefreshCw size={14} className={`text-emerald-600 shrink-0 ${isDbLoading ? "animate-spin text-slate-400" : ""}`} />
+            <span className="whitespace-nowrap shrink-0">{isDbLoading ? "กำลังเชื่อมข้อมูล..." : "ซิงค์ด่วนข้ามเครื่อง (Sync)"}</span>
           </button>
 
           {/* User Guide Toggle */}
@@ -3847,11 +3966,11 @@ export default function App() {
             id="toggle-usermanual-btn"
             type="button"
             onClick={() => setShowUserManual(true)}
-            className="flex items-center justify-center gap-1.5 text-xs font-sans font-bold bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 hover:border-indigo-600 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm"
+            className="flex items-center justify-center gap-1.5 text-xs font-sans font-bold bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 hover:border-indigo-600 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm whitespace-nowrap shrink-0"
             title="เปิดสไลด์คู่มือการใช้งานระบบบันทึกการเป่าแอลกอฮอล์รายวัน"
           >
-            <HelpCircle size={14} />
-            คู่มือการใช้งาน
+            <HelpCircle size={14} className="shrink-0" />
+            <span className="whitespace-nowrap shrink-0">คู่มือการใช้งาน</span>
           </button>
 
           {/* Settings Toggle */}
@@ -3859,10 +3978,22 @@ export default function App() {
             id="toggle-settings-btn"
             type="button"
             onClick={() => setShowSettings(!showSettings)}
-            className="flex items-center justify-center gap-1.5 text-xs font-sans font-medium bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm text-slate-700"
+            className="flex items-center justify-center gap-1.5 text-xs font-sans font-medium bg-white hover:bg-slate-50 border border-slate-200 hover:border-slate-300 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm text-slate-700 whitespace-nowrap shrink-0"
           >
-            <Settings size={14} className="text-slate-550" />
-            ตั้งค่าเกณฑ์คัดกรอง
+            <Settings size={14} className="text-slate-550 shrink-0" />
+            <span className="whitespace-nowrap shrink-0">ตั้งค่าเกณฑ์คัดกรอง</span>
+          </button>
+
+          {/* Logout Button */}
+          <button
+            id="logout-btn"
+            type="button"
+            onClick={handleLogout}
+            className="flex items-center justify-center gap-1.5 text-xs font-sans font-bold bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 border border-rose-200 py-2.5 px-3.5 rounded-xl transition cursor-pointer shadow-sm whitespace-nowrap shrink-0"
+            title="ออกจากระบบบันทึกข้อมูล"
+          >
+            <LogOut size={14} className="text-rose-600 animate-pulse shrink-0" />
+            <span className="whitespace-nowrap shrink-0">ออกจากระบบ</span>
           </button>
         </div>
       </header>
@@ -3950,22 +4081,39 @@ export default function App() {
                   * กำหนดระยะเวลาเป่าซ้ำภายในที่กำหนด (ค่าเริ่มต้น 15 นาที)
                 </p>
               </div>
+            </div>
 
-              <div>
-                <label className="block text-xs font-sans font-bold text-slate-500 mb-1.5 uppercase flex items-center gap-1">
-                  <Shield size={12} className="text-indigo-600" /> รหัสผ่านผู้ดูแลระบบ (Admin PIN)
-                </label>
-                <input
-                  type="text"
-                  maxLength={10}
-                  value={settings.adminPasscode}
-                  onChange={(e) => setSettings({ ...settings, adminPasscode: e.target.value.trim() })}
-                  placeholder="เช่น 1234"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-800 text-xs font-sans font-bold outline-none focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition"
-                />
-                <p className="text-[10px] text-slate-400 mt-1 font-sans">
-                  * รหัสผ่านสำหรับอนุมัติการ เพิ่มรายชื่อ/ลบข้อมูลผู้บันทึก แผนก พนักงาน และประวัติการเป่า (ค่าเริ่มต้น 1234)
-                </p>
+            {/* Dedicated High-Visibility Security Passcode Card */}
+            <div className="mt-5 p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex-1">
+                  <h4 className="text-xs font-bold text-indigo-900 font-sans flex items-center gap-1.5 uppercase">
+                    <Shield size={14} className="text-indigo-600" /> รหัสผ่านความปลอดภัยระบบ (Admin Passcode & Login PIN)
+                  </h4>
+                  <p className="text-[10.5px] text-slate-500 font-sans mt-1">
+                    รหัสผ่านสำหรับเข้าใช้งานระบบครั้งแรกบนคอมพิวเตอร์/มือถือ และเป็นรหัสยืนยันตัวตนสำหรับอนุมัติการแก้ไขข้อมูล ลบประวัติ หรือเพิ่มรายชื่อพนักงาน
+                  </p>
+                </div>
+                
+                <div className="w-full md:w-72">
+                  <div className="relative">
+                    <input
+                      type={showAdminPasscodeInSettings ? "text" : "password"}
+                      maxLength={10}
+                      value={settings.adminPasscode}
+                      onChange={(e) => setSettings({ ...settings, adminPasscode: e.target.value.trim() })}
+                      placeholder="ป้อนรหัสผ่านใหม่ (เช่น 1234)"
+                      className="w-full bg-white border border-slate-200 rounded-xl pl-3 pr-10 py-2.5 text-slate-800 text-xs font-bold tracking-wider font-mono outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/10 transition"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminPasscodeInSettings(!showAdminPasscodeInSettings)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      {showAdminPasscodeInSettings ? <Eye size={14} /> : <Lock size={14} />}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -7680,7 +7828,7 @@ export default function App() {
                 <div id="print-area" className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm max-w-4xl mx-auto print:border-none print:shadow-none print:p-0 print:rounded-none">
                   {/* Business Header */}
                   <div className="text-center pb-6 border-b border-slate-200">
-                    <h2 className="text-xl font-bold text-slate-900 font-sans tracking-tight">
+                    <h2 className="text-xl font-bold text-slate-900 font-sans leading-relaxed">
                       รายงานผลคัดกรองการวัดปริมาณแอลกอฮอล์รายวัน
                     </h2>
                     <p className="text-xs text-slate-500 font-sans mt-1">
