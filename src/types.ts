@@ -30,6 +30,7 @@ export interface AppSettings {
   testerName: string; // default tester
   requireSignature: boolean;
   requirePhoto: boolean;
+  cameraQuality?: "low" | "medium" | "high"; // Camera resolution quality settings
   retestGracePeriodMinutes: number; // grace period in minutes for re-testing after failing
   adminPasscode: string; // passcode for modifying databases or removing logs
   autoBackupToDrive?: boolean;

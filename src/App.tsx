@@ -165,6 +165,7 @@ export default function App() {
       testerName: "นรินทร์ สมบูรณ์ทรัพย์",
       requireSignature: true,
       requirePhoto: true,
+      cameraQuality: "medium",
       retestGracePeriodMinutes: 15,
       adminPasscode: "1234",
       autoBackupToDrive: false,
@@ -412,6 +413,9 @@ export default function App() {
   const [parsedEmployees, setParsedEmployees] = useState<Employee[]>([]);
   const [importOption, setImportOption] = useState<"SKIP" | "OVERWRITE">("OVERWRITE");
   const [showExcelPreview, setShowExcelPreview] = useState(false);
+  const [importTab, setImportTab] = useState<"EXCEL" | "PASTE">("EXCEL");
+  const [bulkPasteText, setBulkPasteText] = useState("");
+  const [bulkDefaultDept, setBulkDefaultDept] = useState("ฝ่ายผลิต");
   const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [driveBackups, setDriveBackups] = useState<GoogleDriveFile[]>([]);
@@ -685,6 +689,7 @@ export default function App() {
           testerName: "นรินทร์ สมบูรณ์ทรัพย์",
           requireSignature: true,
           requirePhoto: true,
+          cameraQuality: "medium",
           retestGracePeriodMinutes: 15,
           adminPasscode: "1234",
           autoBackupToDrive: false
@@ -791,71 +796,15 @@ export default function App() {
             fetchedLogs.push(docSnap.data() as AlcoholTestLog);
           });
 
-          const localLogsStr = localStorage.getItem("alcohol_logs");
-          const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
-          const isLogsSeeded = localStorage.getItem("alcohol_logs_seeded") === "true";
-          
-          if (snapshot.empty && localLogs.length === 0 && !isLogsSeeded) {
-            console.log("Both Firestore and localStorage logs are empty. Seeding INITIAL_LOGS...");
-            INITIAL_LOGS.forEach(log => {
-              setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
-                console.error("Error seeding initial log:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
-            logsRef.current = INITIAL_LOGS;
-            setLogs(INITIAL_LOGS);
-            saveLogsToLocalStorage(INITIAL_LOGS);
-          } else if (snapshot.empty && localLogs.length > 0) {
-            console.log("Firestore is empty but local logs exist. Syncing local logs to Firestore...");
-            localLogs.forEach(log => {
-              setDoc(doc(db, "alcohol_logs", log.id), JSON.parse(JSON.stringify(log))).catch(err => {
-                console.error("Error syncing local log to empty Firestore:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
-            logsRef.current = localLogs;
-            setLogs(localLogs);
-          } else {
-            // Mark as seeded/initialized since we either have logs, or are intentionally empty
-            safeLocalStorageSetItem("alcohol_logs_seeded", "true");
+          // Mark as seeded/initialized since we are connected and fetching from server
+          safeLocalStorageSetItem("alcohol_logs_seeded", "true");
 
-            // Filter out deleted items
-            const activeFetched = fetchedLogs.filter(l => !(deletedRecordsRef.current.has(l.id) && deletedRecordsRef.current.get(l.id) === "log"));
+          const activeFetched = fetchedLogs.filter(l => !(deletedRecordsRef.current.has(l.id) && deletedRecordsRef.current.get(l.id) === "log"));
+          activeFetched.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-            // Bi-directional merge of logs
-            const mergedMap = new Map<string, AlcoholTestLog>();
-            activeFetched.forEach(log => mergedMap.set(log.id, log));
-
-            const uploadPromises: Promise<void>[] = [];
-            // Merge with current in-memory logs to prevent losing newly pulled/sync logs
-            const baseLocalLogs = logsRef.current.length > 0 ? logsRef.current : localLogs;
-
-            baseLocalLogs.forEach(localLog => {
-              if (deletedRecordsRef.current.has(localLog.id) && deletedRecordsRef.current.get(localLog.id) === "log") {
-                return;
-              }
-              if (!mergedMap.has(localLog.id)) {
-                // Local log exists but not in cloud. Keep it and upload!
-                mergedMap.set(localLog.id, localLog);
-                uploadPromises.push(
-                  setDoc(doc(db, "alcohol_logs", localLog.id), JSON.parse(JSON.stringify(localLog))).catch(err => {
-                    console.error("Error uploading local-only log during sync:", err);
-                  })
-                );
-              }
-            });
-
-            const finalMergedLogs = Array.from(mergedMap.values());
-            finalMergedLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-            logsRef.current = finalMergedLogs;
-            setLogs(finalMergedLogs);
-            saveLogsToLocalStorage(finalMergedLogs);
-
-            if (uploadPromises.length > 0) {
-              Promise.all(uploadPromises).catch(err => console.error("Error in batch log upload:", err));
-            }
-          }
+          logsRef.current = activeFetched;
+          setLogs(activeFetched);
+          saveLogsToLocalStorage(activeFetched);
           
           checkAllLoaded("logs");
         }, (err) => handleConnectionError("logs", err));
@@ -875,82 +824,14 @@ export default function App() {
             fetchedEmployees.push(docSnap.data() as Employee);
           });
 
-          const localEmployeesStr = localStorage.getItem("alcohol_employees");
-          const localEmployees: Employee[] = localEmployeesStr ? JSON.parse(localEmployeesStr) : [];
-          const isEmployeesSeeded = localStorage.getItem("alcohol_employees_seeded") === "true";
+          // Mark as seeded/initialized since we are connected and fetching from server
+          safeLocalStorageSetItem("alcohol_employees_seeded", "true");
 
-          if (snapshot.empty && localEmployees.length === 0 && !isEmployeesSeeded) {
-            console.log("Both Firestore and localStorage employees are empty. Seeding REGISTERED_EMPLOYEES...");
-            REGISTERED_EMPLOYEES.forEach(emp => {
-              setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
-                console.error("Error seeding default employee:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
-            employeesRef.current = REGISTERED_EMPLOYEES;
-            setEmployees(REGISTERED_EMPLOYEES);
-            saveEmployeesToLocalStorage(REGISTERED_EMPLOYEES);
-          } else if (snapshot.empty && localEmployees.length > 0) {
-            console.log("Firestore is empty but local employees exist. Syncing to Firestore...");
-            localEmployees.forEach(emp => {
-              setDoc(doc(db, "employees", emp.id), JSON.parse(JSON.stringify(emp))).catch(err => {
-                console.error("Error syncing local employee to empty Firestore:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
-            employeesRef.current = localEmployees;
-            setEmployees(localEmployees);
-          } else {
-            // Mark as seeded/initialized since we either have employees or are intentionally empty
-            safeLocalStorageSetItem("alcohol_employees_seeded", "true");
+          const activeFetched = fetchedEmployees.filter(e => !(deletedRecordsRef.current.has(e.id) && deletedRecordsRef.current.get(e.id) === "employee"));
 
-            const activeFetched = fetchedEmployees.filter(e => !(deletedRecordsRef.current.has(e.id) && deletedRecordsRef.current.get(e.id) === "employee"));
-
-            // Bi-directional merge of employees
-            const mergedMap = new Map<string, Employee>();
-            activeFetched.forEach(emp => mergedMap.set(emp.id, emp));
-
-            const uploadPromises: Promise<void>[] = [];
-            // Merge with current in-memory employees to prevent losing newly pulled/sync employees
-            const baseLocalEmployees = employeesRef.current.length > 0 ? employeesRef.current : localEmployees;
-
-            baseLocalEmployees.forEach(localEmp => {
-              if (deletedRecordsRef.current.has(localEmp.id) && deletedRecordsRef.current.get(localEmp.id) === "employee") {
-                return;
-              }
-              if (!mergedMap.has(localEmp.id)) {
-                // Local employee exists but not in cloud. Keep it and upload!
-                mergedMap.set(localEmp.id, localEmp);
-                uploadPromises.push(
-                  setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
-                    console.error("Error uploading local-only employee during sync:", err);
-                  })
-                );
-              } else {
-                // Both exist, compare updatedAt to pick the newest one
-                const cloudEmp = mergedMap.get(localEmp.id)!;
-                const localTime = localEmp.updatedAt ? new Date(localEmp.updatedAt).getTime() : 0;
-                const cloudTime = cloudEmp.updatedAt ? new Date(cloudEmp.updatedAt).getTime() : 0;
-                if (localTime > cloudTime) {
-                  mergedMap.set(localEmp.id, localEmp);
-                  uploadPromises.push(
-                    setDoc(doc(db, "employees", localEmp.id), JSON.parse(JSON.stringify(localEmp))).catch(err => {
-                      console.error("Error uploading newer local employee during sync:", err);
-                    })
-                  );
-                }
-              }
-            });
-
-            const finalMergedEmps = Array.from(mergedMap.values());
-            employeesRef.current = finalMergedEmps;
-            setEmployees(finalMergedEmps);
-            saveEmployeesToLocalStorage(finalMergedEmps);
-
-            if (uploadPromises.length > 0) {
-              Promise.all(uploadPromises).catch(err => console.error("Error in batch employee upload:", err));
-            }
-          }
+          employeesRef.current = activeFetched;
+          setEmployees(activeFetched);
+          saveEmployeesToLocalStorage(activeFetched);
 
           checkAllLoaded("employees");
         }, (err) => handleConnectionError("employees", err));
@@ -971,57 +852,14 @@ export default function App() {
             if (name) fetchedSupervisors.push(name);
           });
 
-          const localSupervisorsStr = localStorage.getItem("alcohol_supervisors");
-          const localSupervisors: string[] = localSupervisorsStr ? JSON.parse(localSupervisorsStr) : [];
-          const isSupervisorsSeeded = localStorage.getItem("alcohol_supervisors_seeded") === "true";
+          // Mark as seeded/initialized since we are connected and fetching from server
+          safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
 
-          if (snapshot.empty && localSupervisors.length === 0 && !isSupervisorsSeeded) {
-            console.log("Both Firestore and localStorage supervisors are empty. Seeding DEFAULT_SUPERVISORS...");
-            DEFAULT_SUPERVISORS.forEach(sup => {
-              setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
-                console.error("Error seeding default supervisor:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
-            supervisorsRef.current = DEFAULT_SUPERVISORS;
-            setSupervisors(DEFAULT_SUPERVISORS);
-            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(DEFAULT_SUPERVISORS));
-          } else if (snapshot.empty && localSupervisors.length > 0) {
-            console.log("Firestore is empty but local supervisors exist. Syncing to Firestore...");
-            localSupervisors.forEach(sup => {
-              setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
-                console.error("Error syncing local supervisor to empty Firestore:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
-            supervisorsRef.current = localSupervisors;
-            setSupervisors(localSupervisors);
-          } else {
-            // Mark as seeded/initialized since we either have supervisors or are intentionally empty
-            safeLocalStorageSetItem("alcohol_supervisors_seeded", "true");
+          const activeFetched = fetchedSupervisors.filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
 
-            const activeFetched = fetchedSupervisors.filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
-
-            // Bi-directional merge of supervisors
-            const baseLocalSupervisors = supervisorsRef.current.length > 0 ? supervisorsRef.current : localSupervisors;
-            const mergedSupsSet = new Set([...activeFetched, ...baseLocalSupervisors]);
-            const finalMergedSups = Array.from(mergedSupsSet).filter(s => !(deletedRecordsRef.current.has(s) && deletedRecordsRef.current.get(s) === "supervisor"));
-
-            supervisorsRef.current = finalMergedSups;
-            setSupervisors(finalMergedSups);
-            safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(finalMergedSups));
-
-            // Upload any local-only to cloud
-            const uploadPromises = finalMergedSups
-              .filter(sup => !activeFetched.includes(sup))
-              .map(sup => setDoc(doc(db, "supervisors", sup), { name: sup }).catch(err => {
-                console.error("Error uploading local supervisor during sync:", err);
-              }));
-            
-            if (uploadPromises.length > 0) {
-              Promise.all(uploadPromises).catch(err => console.error("Error in batch supervisor upload:", err));
-            }
-          }
+          supervisorsRef.current = activeFetched;
+          setSupervisors(activeFetched);
+          safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(activeFetched));
 
           checkAllLoaded("supervisors");
         }, (err) => handleConnectionError("supervisors", err));
@@ -1042,57 +880,14 @@ export default function App() {
             if (name) fetchedDepartments.push(name);
           });
 
-          const localDeptsStr = localStorage.getItem("alcohol_departments");
-          const localDepts: string[] = localDeptsStr ? JSON.parse(localDeptsStr) : [];
-          const isDepartmentsSeeded = localStorage.getItem("alcohol_departments_seeded") === "true";
+          // Mark as seeded/initialized since we are connected and fetching from server
+          safeLocalStorageSetItem("alcohol_departments_seeded", "true");
 
-          if (snapshot.empty && localDepts.length === 0 && !isDepartmentsSeeded) {
-            console.log("Both Firestore and localStorage departments are empty. Seeding DEPARTMENTS...");
-            DEPARTMENTS.forEach(dept => {
-              setDoc(doc(db, "departments", dept), { name: dept }).catch(err => {
-                console.error("Error seeding default department:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
-            departmentsRef.current = DEPARTMENTS;
-            setDepartments(DEPARTMENTS);
-            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(DEPARTMENTS));
-          } else if (snapshot.empty && localDepts.length > 0) {
-            console.log("Firestore is empty but local departments exist. Syncing to Firestore...");
-            localDepts.forEach(dept => {
-              setDoc(doc(db, "departments", dept), { name: dept }).catch(err => {
-                console.error("Error syncing local department to empty Firestore:", err);
-              });
-            });
-            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
-            departmentsRef.current = localDepts;
-            setDepartments(localDepts);
-          } else {
-            // Mark as seeded/initialized since we either have departments or are intentionally empty
-            safeLocalStorageSetItem("alcohol_departments_seeded", "true");
+          const activeFetched = fetchedDepartments.filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
 
-            const activeFetched = fetchedDepartments.filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
-
-            // Bi-directional merge of departments
-            const baseLocalDepts = departmentsRef.current.length > 0 ? departmentsRef.current : localDepts;
-            const mergedDeptsSet = new Set([...activeFetched, ...baseLocalDepts]);
-            const finalMergedDepts = Array.from(mergedDeptsSet).filter(d => !(deletedRecordsRef.current.has(d) && deletedRecordsRef.current.get(d) === "department"));
-
-            departmentsRef.current = finalMergedDepts;
-            setDepartments(finalMergedDepts);
-            safeLocalStorageSetItem("alcohol_departments", JSON.stringify(finalMergedDepts));
-
-            // Upload any local-only to cloud
-            const uploadPromises = finalMergedDepts
-              .filter(d => !activeFetched.includes(d))
-              .map(d => setDoc(doc(db, "departments", d), { name: d }).catch(err => {
-                console.error("Error uploading local department during sync:", err);
-              }));
-
-            if (uploadPromises.length > 0) {
-              Promise.all(uploadPromises).catch(err => console.error("Error in batch department upload:", err));
-            }
-          }
+          departmentsRef.current = activeFetched;
+          setDepartments(activeFetched);
+          safeLocalStorageSetItem("alcohol_departments", JSON.stringify(activeFetched));
 
           checkAllLoaded("departments");
         }, (err) => handleConnectionError("departments", err));
@@ -1114,6 +909,7 @@ export default function App() {
               testerName: "นรินทร์ สมบูรณ์ทรัพย์",
               requireSignature: true,
               requirePhoto: true,
+              cameraQuality: "medium",
               retestGracePeriodMinutes: 15,
               adminPasscode: "1234",
               autoBackupToDrive: false,
@@ -2205,6 +2001,19 @@ export default function App() {
       safeLocalStorageSetItem("alcohol_deleted_records", JSON.stringify(deletedList));
       deletedRecordsRef.current = deletedMap;
       purgeDeletedRecords(deletedMap);
+
+      const isMockLog = (id: string) => ["LOG-001", "LOG-002", "LOG-003"].includes(id);
+      const isMockEmp = (id: string) => ["EMP-4012", "EMP-1085", "EMP-3042", "EMP-2384", "EMP-1122"].includes(id);
+      const isMockSup = (name: string) => ["พ.ต.ต. ณรงค์ พลเดช", "ร.ต.อ. วันชนะ ยิ่งใหญ่", "จ.ส.อ. เทิดพงษ์ สมบัติ", "นางกัญญารัตน์ ศรีสุข (ฝ่ายบุคคล)"].includes(name);
+      const isMockDept = (name: string) => [
+        "แผนกจัดส่งสินค้า (ขนส่ง)",
+        "รักษาความปลอดภัย (รปภ.)",
+        "พนักงานขับรถยก (Forklift)",
+        "พนักงานคลังสินค้า (Warehouse)",
+        "แผนกวิศวกรรม/ซ่อมบำรุง",
+        "แผนกต้อนรับ/ออฟฟิศ",
+        "อื่นๆ (บุคคลภายนอก/แขกผู้มาติดต่อ)"
+      ].includes(name);
       
       // Merge logs
       const fetchedLogs: AlcoholTestLog[] = [];
@@ -2220,6 +2029,7 @@ export default function App() {
       const baseLocalLogs = logsRef.current.length > 0 ? logsRef.current : localLogs;
       const logUploadPromises: Promise<void>[] = [];
       baseLocalLogs.forEach(localLog => {
+        if (isMockLog(localLog.id)) return;
         if (deletedMap.has(localLog.id) && deletedMap.get(localLog.id) === "log") return;
         if (!mergedLogsMap.has(localLog.id)) {
           mergedLogsMap.set(localLog.id, localLog);
@@ -2248,6 +2058,7 @@ export default function App() {
       const baseLocalEmps = employeesRef.current.length > 0 ? employeesRef.current : localEmployees;
       const empUploadPromises: Promise<void>[] = [];
       baseLocalEmps.forEach(localEmp => {
+        if (isMockEmp(localEmp.id)) return;
         if (deletedMap.has(localEmp.id) && deletedMap.get(localEmp.id) === "employee") return;
         if (!mergedEmpsMap.has(localEmp.id)) {
           mergedEmpsMap.set(localEmp.id, localEmp);
@@ -2287,7 +2098,7 @@ export default function App() {
       setSupervisors(finalMergedSups);
       safeLocalStorageSetItem("alcohol_supervisors", JSON.stringify(finalMergedSups));
       const supUploadPromises = finalMergedSups
-        .filter(sup => !activeSups.includes(sup))
+        .filter(sup => !activeSups.includes(sup) && !isMockSup(sup))
         .map(sup => setDoc(doc(db, "supervisors", sup), { name: sup }));
         
       // Merge departments
@@ -2306,7 +2117,7 @@ export default function App() {
       setDepartments(finalMergedDepts);
       safeLocalStorageSetItem("alcohol_departments", JSON.stringify(finalMergedDepts));
       const deptUploadPromises = finalMergedDepts
-        .filter(d => !activeDepts.includes(d))
+        .filter(d => !activeDepts.includes(d) && !isMockDept(d))
         .map(d => setDoc(doc(db, "departments", d), { name: d }));
         
       await Promise.all([
@@ -2432,6 +2243,7 @@ export default function App() {
     const reader = new FileReader();
     
     setExcelFileError(null);
+    console.log(`[Excel Import] Starting parsing for file: ${file.name}, size: ${file.size} bytes`);
     
     reader.onload = (event) => {
       try {
@@ -2452,7 +2264,7 @@ export default function App() {
           const hasKeywords = (t: string) => {
             const lower = t.toLowerCase();
             return lower.includes("ชื่อ") || lower.includes("แผนก") || lower.includes("รหัส") || lower.includes("ตำแหน่ง") || lower.includes("สังกัด") ||
-                   lower.includes("name") || lower.includes("id") || lower.includes("dept") || lower.includes("role");
+                   lower.includes("name") || lower.includes("id") || lower.includes("dept") || lower.includes("role") || lower.includes("คนขับ");
           };
           
           if (hasKeywords(text)) {
@@ -2484,51 +2296,111 @@ export default function App() {
           return;
         }
 
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        if (!sheet) {
-          setExcelFileError("ไม่พบข้อมูลชีทที่ถูกต้องในไฟล์");
+        console.log(`[Excel Import] Loaded workbook sheets:`, workbook.SheetNames);
+
+        // Advanced Multi-sheet Scanning: find the sheet with the most keyword matches
+        let bestSheet = null;
+        let bestSheetName = "";
+        let bestRows: any[][] = [];
+        let maxSheetMatches = 0;
+
+        for (const sName of workbook.SheetNames) {
+          const s = workbook.Sheets[sName];
+          if (!s) continue;
+          const r = XLSX.utils.sheet_to_json(s, { header: 1 }) as any[][];
+          if (!r || r.length === 0) continue;
+
+          let sheetMatchCount = 0;
+          for (let i = 0; i < Math.min(r.length, 15); i++) {
+            const row = r[i];
+            if (!row) continue;
+            for (const cell of row) {
+              if (cell === null || cell === undefined) continue;
+              const cellStr = String(cell).toLowerCase().trim().replace(/[\s\-\_\*]/g, "");
+              if (
+                cellStr.includes("ชื่อ") || cellStr.includes("name") || cellStr.includes("fullname") || cellStr.includes("รายชื่อ") || cellStr.includes("พนักงาน") || cellStr.includes("ผู้รับตรวจ") || cellStr.includes("คนขับ") || cellStr.includes("ผู้ขับ") || cellStr.includes("ผู้ใช้งาน") || cellStr.includes("user") ||
+                cellStr.includes("รหัส") || cellStr.includes("id") || cellStr.includes("code") || cellStr.includes("empid") || cellStr.includes("employee") ||
+                cellStr.includes("แผนก") || cellStr.includes("สังกัด") || cellStr.includes("dept") || cellStr.includes("department") || cellStr.includes("ฝ่าย") || cellStr.includes("หน่วยงาน") || cellStr.includes("กลุ่ม") || cellStr.includes("กอง") ||
+                cellStr.includes("ตำแหน่ง") || cellStr.includes("role") || cellStr.includes("position") || cellStr.includes("หน้าที่")
+              ) {
+                sheetMatchCount++;
+              }
+            }
+          }
+
+          console.log(`[Excel Import] Sheet [${sName}] matched keywords ${sheetMatchCount} times. Total rows: ${r.length}`);
+
+          if (sheetMatchCount > maxSheetMatches || (sheetMatchCount > 0 && !bestSheet)) {
+            maxSheetMatches = sheetMatchCount;
+            bestSheet = s;
+            bestSheetName = sName;
+            bestRows = r;
+          }
+        }
+
+        // Fallback to first sheet if scanning found no matches
+        if (!bestSheet && workbook.SheetNames.length > 0) {
+          bestSheetName = workbook.SheetNames[0];
+          bestSheet = workbook.Sheets[bestSheetName];
+          if (bestSheet) {
+            bestRows = XLSX.utils.sheet_to_json(bestSheet, { header: 1 }) as any[][];
+          }
+        }
+
+        if (!bestSheet || bestRows.length === 0) {
+          setExcelFileError("ไม่พบข้อมูลชีทที่ถูกต้องในไฟล์ หรือไฟล์ไม่มีข้อมูลพนักงาน");
           return;
         }
 
-        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 }) as any[][];
-        if (!rows || rows.length === 0) {
-          setExcelFileError("ไม่พบข้อมูลพนักงานในไฟล์ หรือไฟล์ว่างเปล่า");
-          return;
-        }
+        console.log(`[Excel Import] Using sheet: [${bestSheetName}] with ${bestRows.length} rows`);
 
-        // Dynamic header row detection by matching expected columns / keywords
+        // Advanced header row detection with title-row vs. tabular-header disambiguation
         let headerRowIndex = -1;
         let maxMatchCount = 0;
+        let maxNonEmptyCells = 0;
 
-        for (let i = 0; i < Math.min(rows.length, 15); i++) {
-          const row = rows[i];
+        for (let i = 0; i < Math.min(bestRows.length, 15); i++) {
+          const row = bestRows[i];
           if (!row || row.length === 0) continue;
 
           let matchCount = 0;
+          let nonEmptyCount = 0;
+          
           for (const cell of row) {
-            if (cell === null || cell === undefined) continue;
-            const s = String(cell).toLowerCase().trim().replace(/[\s\-\_\*]/g, "");
+            const cellVal = String(cell ?? "").trim();
+            if (cellVal !== "") {
+              nonEmptyCount++;
+            }
+            
+            const s = cellVal.toLowerCase().replace(/[\s\-\_\*]/g, "");
             if (
-              s.includes("ชื่อ") || s.includes("name") || s.includes("fullname") ||
-              s.includes("รหัส") || s.includes("id") || s.includes("code") ||
-              s.includes("แผนก") || s.includes("สังกัด") || s.includes("dept") || s.includes("department") || s.includes("ฝ่าย") || s.includes("หน่วยงาน") ||
-              s.includes("ตำแหน่ง") || s.includes("role") || s.includes("position")
+              s.includes("ชื่อ") || s.includes("name") || s.includes("fullname") || s.includes("รายชื่อ") || s.includes("พนักงาน") || s.includes("ผู้รับตรวจ") || s.includes("คนขับ") || s.includes("ผู้ขับ") || s.includes("ผู้ใช้งาน") || s.includes("user") ||
+              s.includes("รหัส") || s.includes("id") || s.includes("code") || s.includes("empid") || s.includes("employee") ||
+              s.includes("แผนก") || s.includes("สังกัด") || s.includes("dept") || s.includes("department") || s.includes("ฝ่าย") || s.includes("หน่วยงาน") || s.includes("กลุ่ม") || s.includes("กอง") ||
+              s.includes("ตำแหน่ง") || s.includes("role") || s.includes("position") || s.includes("หน้าที่")
             ) {
               matchCount++;
             }
           }
 
-          if (matchCount > maxMatchCount && matchCount >= 1) {
+          // Prefer rows with more matching keywords.
+          // If matchCount is equal, prefer the one with more non-empty cells (indicating a real header row instead of a title block).
+          if (
+            matchCount > maxMatchCount || 
+            (matchCount === maxMatchCount && matchCount > 0 && nonEmptyCount > maxNonEmptyCells)
+          ) {
             maxMatchCount = matchCount;
+            maxNonEmptyCells = nonEmptyCount;
             headerRowIndex = i;
           }
         }
 
+        console.log(`[Excel Import] Detected header row at index: ${headerRowIndex}, matches: ${maxMatchCount}, non-empty: ${maxNonEmptyCells}`);
+
         let jsonData: any[] = [];
         if (headerRowIndex !== -1) {
-          const headers = rows[headerRowIndex].map(h => String(h ?? "").trim());
-          const dataRows = rows.slice(headerRowIndex + 1);
+          const headers = bestRows[headerRowIndex].map(h => String(h ?? "").trim());
+          const dataRows = bestRows.slice(headerRowIndex + 1);
 
           jsonData = dataRows.map(row => {
             const rowObj: any = {};
@@ -2539,12 +2411,12 @@ export default function App() {
             });
             return rowObj;
           }).filter(obj => {
-            // Filter out empty rows
             return Object.values(obj).some(v => v !== null && v !== undefined && String(v).trim() !== "");
           });
         } else {
           // Fallback to standard sheet_to_json
-          jsonData = XLSX.utils.sheet_to_json(sheet) as any[];
+          console.log(`[Excel Import] Header row not detected. Falling back to standard sheet_to_json`);
+          jsonData = XLSX.utils.sheet_to_json(bestSheet) as any[];
         }
 
         if (jsonData.length === 0) {
@@ -2600,6 +2472,7 @@ export default function App() {
               firstNameVal = val;
             } else if (
               cleanKey === "นามสกุล" ||
+              cleanKey === "สกุล" ||
               cleanKey === "lastname" ||
               cleanKey === "lname" ||
               cleanKey === "surname"
@@ -2612,14 +2485,10 @@ export default function App() {
             ) {
               prefixVal = val;
             } else if (
-              cleanKey.includes("รหัสพนักงาน") ||
-              cleanKey.includes("รหัสประจำตัว") ||
-              cleanKey === "รหัส" ||
-              cleanKey === "id" ||
-              cleanKey === "empid" ||
-              cleanKey === "employeeid" ||
-              cleanKey === "code" ||
-              cleanKey === "staffid"
+              cleanKey.includes("รหัส") ||
+              cleanKey.includes("id") ||
+              cleanKey.includes("code") ||
+              cleanKey.includes("emp")
             ) {
               idVal = val;
             } else if (
@@ -2909,6 +2778,100 @@ export default function App() {
     };
 
     requestPermission(`นำเข้าข้อมูลพนักงานจากไฟล์จำนวน ${parsedEmployees.length} คน`, runImport);
+  };
+
+  const handleBulkPasteImport = () => {
+    if (!bulkPasteText.trim()) {
+      setExcelFileError("กรุณากรอกหรือวางรายชื่อพนักงานก่อนกดยืนยัน");
+      return;
+    }
+
+    setExcelFileError(null);
+    const lines = bulkPasteText.split("\n");
+    const tempParsed: Employee[] = [];
+    const defaultColors = ["%230284c7", "%234f46e5", "%230891b2", "%230d9488", "%23ea580c"];
+    let skippedDuplicateCount = 0;
+
+    lines.forEach((line) => {
+      const cleanLine = line.trim();
+      if (!cleanLine) return;
+
+      // Split by tab, comma, or semicolon
+      let parts: string[] = [];
+      if (cleanLine.includes("\t")) {
+        parts = cleanLine.split("\t");
+      } else if (cleanLine.includes(",")) {
+        parts = cleanLine.split(",");
+      } else if (cleanLine.includes(";")) {
+        parts = cleanLine.split(";");
+      } else {
+        parts = [cleanLine];
+      }
+
+      parts = parts.map(p => p.trim());
+
+      let nameVal = parts[0] || "";
+      let deptVal = parts[1] || bulkDefaultDept || "ฝ่ายผลิต";
+      let roleVal = parts[2] || "พนักงานทั่วไป";
+      let idVal = parts[3] || "";
+
+      if (!nameVal) return;
+
+      // Filter out headers/boilerplate if pasted
+      if (
+        nameVal === "ชื่อ-นามสกุล *" ||
+        nameVal === "ชื่อ-นามสกุล" ||
+        nameVal === "ชื่อ" ||
+        nameVal === "fullname" ||
+        nameVal.includes("ดาวน์โหลดแบบฟอร์ม") ||
+        nameVal.toLowerCase().includes("total") ||
+        nameVal.includes("รวมทั้งหมด")
+      ) {
+        return;
+      }
+
+      if (!idVal) {
+        idVal = `EMP-${Math.floor(100000 + Math.random() * 900000)}`;
+      }
+
+      idVal = idVal.trim().replace(/[\/\\]/g, "-");
+
+      const isDuplicateInExcel = tempParsed.some(
+        emp => (idVal && emp.id.trim().toLowerCase() === idVal.trim().toLowerCase()) ||
+               emp.name.trim().toLowerCase() === nameVal.trim().toLowerCase()
+      );
+
+      if (isDuplicateInExcel) {
+        skippedDuplicateCount++;
+        return;
+      }
+
+      const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
+      const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${idVal}</text></svg>`);
+
+      tempParsed.push({
+        id: idVal,
+        name: nameVal,
+        department: deptVal,
+        role: roleVal,
+        photo: fallbackPhoto
+      });
+    });
+
+    if (tempParsed.length === 0) {
+      setExcelFileError("ไม่สามารถวิเคราะห์ข้อมูลรายชื่อได้ กรุณาตรวจสอบรูปแบบข้อมูล");
+      return;
+    }
+
+    setParsedEmployees(tempParsed);
+    setShowExcelPreview(true);
+    setBulkPasteText(""); // Reset text area on success
+
+    if (skippedDuplicateCount > 0) {
+      showNotification(`วิเคราะห์รายชื่อพนักงานสำเร็จ พบทั้งหมด ${tempParsed.length} คน (ข้ามรายชื่อที่ซ้ำกัน ${skippedDuplicateCount} คน)`, "info", "วิเคราะห์รายชื่อสำเร็จ");
+    } else {
+      showNotification(`วิเคราะห์รายชื่อพนักงานเรียบร้อย พบทั้งหมด ${tempParsed.length} คน`, "info", "วิเคราะห์รายชื่อสำเร็จ");
+    }
   };
 
   const handleRecordEmployeeLeave = (emp: Employee) => {
@@ -3947,6 +3910,22 @@ export default function App() {
               </label>
             </div>
 
+            {settings.requirePhoto && (
+              <div className="mt-3 p-3 bg-indigo-50/40 rounded-xl border border-indigo-100/50 flex flex-col sm:flex-row sm:items-center gap-2.5">
+                <span className="text-xs font-sans text-slate-700 font-bold flex items-center gap-1">📸 คุณภาพรูปถ่ายหลักฐาน:</span>
+                <select
+                  id="select-camera-quality"
+                  value={settings.cameraQuality || "medium"}
+                  onChange={(e) => setSettings({ ...settings, cameraQuality: e.target.value as "low" | "medium" | "high" })}
+                  className="bg-white border border-slate-200 text-slate-800 rounded-lg px-2.5 py-1 text-xs font-sans font-medium outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/20 cursor-pointer"
+                >
+                  <option value="high">สูง (HD 640x480 - ชัดเจนมากที่สุด เหมาะสำหรับการยืนยันตัวตน)</option>
+                  <option value="medium">มาตรฐาน (SD 480x360 - คมชัดกำลังดี ขนาดสมดุล แนะนำ)</option>
+                  <option value="low">ประหยัดพื้นที่ (200x150 - ขนาดเล็กและประหยัดพื้นที่บนระบบ)</option>
+                </select>
+              </div>
+            )}
+
             {/* Advanced Cloud Sync Manager Section */}
             <div className="mt-5 pt-4 border-t border-slate-200">
               <h3 className="text-xs font-bold text-slate-800 font-sans flex items-center gap-1.5 uppercase">
@@ -4041,6 +4020,7 @@ export default function App() {
                     testerName: "พ.ต.ต. ณรงค์ พลเดช",
                     requireSignature: true,
                     requirePhoto: false,
+                    cameraQuality: "medium",
                     retestGracePeriodMinutes: 15,
                     adminPasscode: "1234",
                     autoBackupToDrive: false,
@@ -4378,6 +4358,7 @@ export default function App() {
                 <CameraCapture 
                   onCapture={(img) => setCapturedPhoto(img)} 
                   savedImage={capturedPhoto || undefined} 
+                  quality={settings.cameraQuality || "medium"}
                 />
 
 
@@ -4554,35 +4535,6 @@ export default function App() {
 
         {/* ================= RIGHT COLUMN: DASHBOARD & HISTORY ================= */}
         <section id="dashboard-history-column" className="lg:col-span-7 flex flex-col gap-6">
-          
-          {/* 14. Responsive Info Success Alert Banner */}
-          <AnimatePresence>
-            {showSuccessBanner && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: -10 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: -10 }}
-                className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-between gap-3 shadow-sm"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold shadow-sm">
-                    ✓
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold font-sans text-emerald-900">บันทึกผลการเป่าแอลกอฮอล์เสร็จสมบูรณ์</h4>
-                    <p className="text-[11px] text-emerald-700 font-mono">ID: {recentSavedId} | บันทึกระดับแอลกอฮอล์เรียบร้อยและระบบอัปเดตสถิติทันที</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setShowSuccessBanner(false)}
-                  className="text-emerald-500 hover:text-emerald-800 p-1 hover:bg-emerald-100 rounded-md transition cursor-pointer"
-                >
-                  <X size={14} />
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
           {/* Dashboard Section Header with Date Filter */}
           {(() => {
             const getDaysInMonth = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
@@ -5267,7 +5219,7 @@ export default function App() {
                     <span className="block text-[8px] text-slate-400 font-sans tracking-tight font-bold">อัตราตรวจคัดกรอง</span>
                   </div>
                 </div>
-                 <p className="text-[11px] text-slate-600 font-sans font-bold mt-2 text-center">
+                <p className="text-[11px] text-slate-600 font-sans font-bold mt-2 text-center">
                   เป่าตรวจ {testedCount} | ลางาน {leaveCount} | ค้างตรวจ {notTestedCount} (รวม {totalRegisteredCount} คน)
                 </p>
               </div>
@@ -5626,52 +5578,129 @@ export default function App() {
                             <div>
                               <h4 className="text-xs font-bold text-slate-800 font-sans flex items-center gap-1.5">
                                 <FileSpreadsheet size={14} className="text-emerald-600 animate-pulse" />
-                                <span>นำเข้าพนักงานผ่าน Excel / CSV</span>
+                                <span>นำเข้ารายชื่อหลายคนพร้อมกัน</span>
                               </h4>
                               <p className="text-[9px] text-slate-400 font-sans mt-0.5">
-                                นำเข้ารายชื่อครั้งละหลายคนได้อย่างรวดเร็ว
+                                เลือกอัปโหลดไฟล์ หรือ คัดลอกรายชื่อมาวางเพื่อเพิ่มรวดเร็ว
                               </p>
                             </div>
+                          </div>
+
+                          {/* Tab switcher */}
+                          <div className="grid grid-cols-2 p-0.5 bg-slate-100/80 rounded-lg text-center text-[10.5px] font-bold font-sans">
                             <button
                               type="button"
-                              onClick={handleDownloadExcelTemplate}
-                              className="text-[9.5px] text-emerald-700 hover:text-emerald-900 font-bold font-sans bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer transition hover:bg-emerald-100/50"
-                              title="ดาวน์โหลดแบบฟอร์มไฟล์ Excel"
+                              onClick={() => {
+                                setImportTab("EXCEL");
+                                setExcelFileError(null);
+                              }}
+                              className={`py-1 rounded-md transition ${
+                                importTab === "EXCEL"
+                                  ? "bg-white text-slate-800 shadow-xs"
+                                  : "text-slate-500 hover:text-slate-800 cursor-pointer"
+                              }`}
                             >
-                              <Download size={11} />
-                              <span>แบบฟอร์ม</span>
+                              📂 อัปโหลดไฟล์ Excel / CSV
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setImportTab("PASTE");
+                                setExcelFileError(null);
+                              }}
+                              className={`py-1 rounded-md transition ${
+                                importTab === "PASTE"
+                                  ? "bg-white text-slate-800 shadow-xs"
+                                  : "text-slate-500 hover:text-slate-800 cursor-pointer"
+                              }`}
+                            >
+                              📋 คัดลอก-วางด่วน (Bulk Paste)
                             </button>
                           </div>
 
-                          {/* File input area */}
-                          <div className="space-y-2">
-                            <label 
-                              htmlFor="excel-file-upload-input"
-                              className="block border-2 border-dashed border-slate-200 hover:border-emerald-400 rounded-xl p-3.5 text-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 transition-all group"
-                            >
-                              <input
-                                id="excel-file-upload-input"
-                                type="file"
-                                accept=".xlsx,.xls,.csv"
-                                onChange={handleExcelImport}
-                                className="sr-only"
-                              />
-                              <Upload size={18} className="mx-auto text-slate-400 group-hover:text-emerald-600 transition mb-1" />
-                              <span className="text-[10px] font-sans font-bold text-slate-600 block group-hover:text-emerald-700 transition">
-                                คลิกเพื่อเลือกไฟล์พนักงาน
-                              </span>
-                              <span className="text-[8.5px] font-sans text-slate-400 block mt-0.5">
-                                รองรับไฟล์ .xlsx, .xls, .csv
-                              </span>
-                            </label>
-
-                            {excelFileError && (
-                              <div className="bg-red-50 border border-red-150 p-2 rounded-lg text-[9.5px] text-red-700 font-sans flex items-start gap-1.5 leading-snug">
-                                <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-                                <span>{excelFileError}</span>
+                          {importTab === "EXCEL" ? (
+                            <div className="space-y-2">
+                              <div className="flex justify-between items-center bg-slate-50 p-2 rounded-lg border border-slate-150">
+                                <span className="text-[9px] text-slate-500 font-sans">ดาวน์โหลดแบบฟอร์มเพื่อกรอกข้อมูล</span>
+                                <button
+                                  type="button"
+                                  onClick={handleDownloadExcelTemplate}
+                                  className="text-[9.5px] text-emerald-700 hover:text-emerald-900 font-bold font-sans bg-white border border-emerald-100 px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer transition hover:bg-emerald-50"
+                                  title="ดาวน์โหลดแบบฟอร์มไฟล์ Excel"
+                                >
+                                  <Download size={11} />
+                                  <span>แบบฟอร์มตัวอย่าง</span>
+                                </button>
                               </div>
-                            )}
-                          </div>
+
+                              {/* File input area */}
+                              <label 
+                                htmlFor="excel-file-upload-input"
+                                className="block border-2 border-dashed border-slate-200 hover:border-emerald-400 rounded-xl p-3.5 text-center cursor-pointer bg-slate-50/50 hover:bg-slate-50 transition-all group"
+                              >
+                                <input
+                                  id="excel-file-upload-input"
+                                  type="file"
+                                  accept=".xlsx,.xls,.csv"
+                                  onChange={handleExcelImport}
+                                  className="sr-only"
+                                />
+                                <Upload size={18} className="mx-auto text-slate-400 group-hover:text-emerald-600 transition mb-1" />
+                                <span className="text-[10px] font-sans font-bold text-slate-600 block group-hover:text-emerald-700 transition">
+                                  คลิกเพื่อเลือกไฟล์พนักงาน (.xlsx, .xls, .csv)
+                                </span>
+                                <span className="text-[8.5px] font-sans text-slate-400 block mt-0.5">
+                                  ระบบรองรับภาษาไทย และจะวิเคราะห์หัวตารางโดยอัตโนมัติ
+                                </span>
+                              </label>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              {/* Quick instructions */}
+                              <div className="text-[9px] leading-relaxed text-slate-500 bg-slate-50 border border-slate-150 p-2 rounded-lg">
+                                💡 <strong>วิธีการพิมพ์/วาง:</strong> วางรายชื่อพนักงานได้เลย 1 บรรทัดต่อ 1 คน หรือคัดลอกจาก Excel มาวางได้ทันที (กรณีมีหลายคอลัมน์จะแยกด้วย <i>ชื่อ, แผนก, ตำแหน่ง, รหัส</i> อัตโนมัติ)
+                              </div>
+
+                              {/* Default department assigner */}
+                              <div className="flex items-center gap-1.5 justify-between">
+                                <span className="text-[10px] font-sans text-slate-500 shrink-0">แผนกเริ่มต้นสำหรับรายชื่อที่วาง:</span>
+                                <select
+                                  value={bulkDefaultDept}
+                                  onChange={(e) => setBulkDefaultDept(e.target.value)}
+                                  className="py-0.5 px-1.5 bg-slate-50 border border-slate-200 rounded-md text-[10px] font-sans text-slate-700 focus:bg-white focus:outline-none focus:border-emerald-500 transition max-w-[150px]"
+                                >
+                                  {departments.map((dept) => (
+                                    <option key={dept} value={dept}>
+                                      {dept.replace(" (จำนวนคัดกรอง)", "")}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              {/* Paste textarea */}
+                              <textarea
+                                value={bulkPasteText}
+                                onChange={(e) => setBulkPasteText(e.target.value)}
+                                placeholder="พิมพ์หรือวางรายชื่อที่นี่... เช่น:&#13;นายสมชาย ใจดี&#13;นางสาวสมศรี ดีใจ, ฝ่ายผลิต, ฝ่ายเทคนิค&#13;นายมานะ เก่งกาจ, ฝ่ายจัดส่ง, พนักงานขับรถ, EMP-9988"
+                                className="w-full h-24 p-2 border border-slate-200 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/20 rounded-lg text-[10.5px] font-sans placeholder-slate-400 focus:outline-none resize-none leading-normal"
+                              />
+
+                              <button
+                                type="button"
+                                onClick={handleBulkPasteImport}
+                                className="w-full text-white bg-emerald-600 hover:bg-emerald-700 font-sans font-bold py-1.5 rounded-lg text-[11px] transition shadow-xs cursor-pointer flex items-center justify-center gap-1 active:scale-98"
+                              >
+                                ⚡ วิเคราะห์รายชื่อและนำเข้าทันที
+                              </button>
+                            </div>
+                          )}
+
+                          {excelFileError && (
+                            <div className="bg-red-50 border border-red-150 p-2 rounded-lg text-[9.5px] text-red-700 font-sans flex items-start gap-1.5 leading-snug">
+                              <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                              <span>{excelFileError}</span>
+                            </div>
+                          )}
                         </div>
 
                       </div>
@@ -5679,50 +5708,63 @@ export default function App() {
                       {/* DIRECTORY LIST & DEPT MANAGEMENT COLUMN (lg:col-span-2) */}
                       <div className="lg:col-span-2 flex flex-col space-y-4">
                         {/* DIRECTORY LIST */}
-                        <div className="bg-white p-3.5 border border-slate-200 rounded-xl flex flex-col space-y-3 shadow-sm">
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-2">
-                            <div>
-                              <h4 className="text-xs font-bold text-slate-800 font-sans flex items-center gap-1.5">
-                                <span className="w-1.5 h-3 bg-indigo-600 rounded-full"></span>
-                                รายชื่อพนักงานในฐานข้อมูลทั้งหมด ({employees.length} คน)
-                              </h4>
-                              <p className="text-[10px] text-slate-450 font-sans">
-                                ค้นหารายชื่อ ตรวจสอบสถานะ แก้ไขข้อมูลพนักงาน หรือทำการลบพนักงาน
-                              </p>
+                        <div className="bg-white p-4.5 border border-slate-200 rounded-2xl flex flex-col space-y-4 shadow-sm">
+                          {/* 1. Header Title & Description (Full Width - Stacks nicely) */}
+                          <div className="border-b border-slate-100 pb-3">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                              <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-4.5 bg-indigo-600 rounded-full shrink-0"></span>
+                                <h4 className="text-sm md:text-base font-extrabold text-slate-800 font-sans tracking-tight">
+                                  รายชื่อพนักงานในฐานข้อมูลทั้งหมด
+                                </h4>
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-black font-sans bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                  {employees.length} คน
+                                </span>
+                              </div>
                             </div>
-                             {/* Stats, Delete all, and Merge Sync */}
-                            <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
-                              <span className="text-[10px] font-sans font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100/50">
-                                ทั้งหมด {employees.length} คน
+                            <p className="text-[11px] md:text-xs text-slate-500 font-sans mt-1.5 leading-relaxed">
+                              สตรีมข้อมูลพนักงานทั้งหมดในระบบ: ค้นหารายชื่อ ตรวจสอบสถานะ แก้ไขข้อมูลพนักงาน หรือทำการลบพนักงานออกจากระบบคลาวด์
+                            </p>
+                          </div>
+
+                          {/* 2. Professional Tool Actions Bar */}
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50/70 p-3 rounded-xl border border-slate-200/60">
+                            <div className="flex items-center gap-1.5 text-slate-400">
+                              <Settings size={12} className="text-slate-400 shrink-0" />
+                              <span className="text-[10px] font-sans font-bold uppercase tracking-wider text-slate-500">
+                                เครื่องมือจัดการฐานข้อมูล
                               </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5">
                               <button
                                 type="button"
                                 onClick={handleMergeAndSyncAll}
-                                className="text-[10px] font-sans font-bold text-emerald-600 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-2.5 py-1 rounded-lg border border-emerald-200 hover:border-emerald-600 transition flex items-center gap-1 cursor-pointer shadow-sm animate-pulse-once"
-                                title="ผสานรวมและซิงก์ข้อมูลพนักงานและประวัติระหว่างเครื่องนี้กับคลาวด์ทันที เพื่อให้ข้อมูลคอมพิวเตอร์และมือถือเป็นชุดเดียวกัน"
+                                className="text-[10px] md:text-xs font-sans font-bold text-emerald-700 hover:text-white bg-emerald-50 hover:bg-emerald-600 px-3 py-1.5 rounded-lg border border-emerald-200 hover:border-emerald-600 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                                title="ดึงข้อมูลล่าสุดจากคลาวด์และผสานรวมระหว่างเครื่องนี้กับคลาวด์"
                               >
-                                <RefreshCw size={11} className={isDbLoading ? "animate-spin" : ""} />
-                                {isDbLoading ? "กำลังผสานรวม..." : "ซิงก์ข้อมูลกับคลาวด์ (Sync)"}
+                                <RefreshCw size={12} className={isDbLoading ? "animate-spin" : ""} />
+                                {isDbLoading ? "กำลังผสานรวม..." : "ซิงก์ข้อมูล Cloud (Sync)"}
                               </button>
-                              
+
                               <button
                                 type="button"
                                 onClick={handleRestoreDefaultEmployees}
-                                className="text-[10px] font-sans font-bold text-indigo-600 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-2.5 py-1 rounded-lg border border-indigo-200 hover:border-indigo-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
-                                title="นำเข้ารายชื่อพนักงานเริ่มต้นของระบบกลับเข้าสู่ระบบอีกครั้ง"
+                                className="text-[10px] md:text-xs font-sans font-bold text-indigo-700 hover:text-white bg-indigo-50 hover:bg-indigo-600 px-3 py-1.5 rounded-lg border border-indigo-200 hover:border-indigo-600 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                                title="ดึงข้อมูลรายชื่อพนักงานตัวอย่างเริ่มต้นกลับคืนมาระบบคลาวด์"
                               >
-                                <Plus size={11} />
-                                ดึงข้อมูลเริ่มต้นใหม่
+                                <Plus size={12} />
+                                โหลดรายชื่อเริ่มต้น
                               </button>
 
                               {employees.length > 0 && (
                                 <button
                                   type="button"
                                   onClick={handleDeleteAllEmployees}
-                                  className="text-[10px] font-sans font-bold text-red-600 hover:text-white bg-red-50 hover:bg-red-600 px-2.5 py-1 rounded-lg border border-red-200 hover:border-red-600 transition flex items-center gap-1 cursor-pointer shadow-sm"
-                                  title="ลบรายชื่อพนักงานทั้งหมดออกจากระบบ"
+                                  className="text-[10px] md:text-xs font-sans font-bold text-red-750 hover:text-white bg-red-50 hover:bg-red-600 px-3 py-1.5 rounded-lg border border-red-200 hover:border-red-600 transition flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95 shrink-0"
+                                  title="ลบพนักงานทั้งหมดออกจากฐานข้อมูลคลาวด์"
                                 >
-                                  <Trash2 size={11} />
+                                  <Trash2 size={12} />
                                   ลบรายชื่อทั้งหมด
                                 </button>
                               )}
@@ -6270,6 +6312,34 @@ export default function App() {
               </AnimatePresence>
             </div>
           </div>
+
+          {/* 14. Responsive Info Success Alert Banner */}
+          <AnimatePresence>
+            {showSuccessBanner && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                className="p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-2xl flex items-center justify-between gap-3 shadow-sm"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-emerald-600 text-white flex items-center justify-center font-bold shadow-sm">
+                    ✓
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold font-sans text-emerald-900">บันทึกผลการเป่าแอลกอฮอล์เสร็จสมบูรณ์</h4>
+                    <p className="text-[11px] text-emerald-700 font-mono">ID: {recentSavedId} | บันทึกระดับแอลกอฮอล์เรียบร้อยและระบบอัปเดตสถิติทันที</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowSuccessBanner(false)}
+                  className="text-emerald-500 hover:text-emerald-800 p-1 hover:bg-emerald-100 rounded-md transition cursor-pointer"
+                >
+                  <X size={14} />
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Active Retest Countdown & Waiting List */}
           <div className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 shadow-lg flex flex-col gap-4">

@@ -4,9 +4,10 @@ import { Camera, Image as ImageIcon, Video, RefreshCw, Check, AlertCircle } from
 interface CameraCaptureProps {
   onCapture: (base64Image: string) => void;
   savedImage?: string;
+  quality?: "low" | "medium" | "high";
 }
 
-export default function CameraCapture({ onCapture, savedImage }: CameraCaptureProps) {
+export default function CameraCapture({ onCapture, savedImage, quality = "medium" }: CameraCaptureProps) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isActive, setIsActive] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -16,6 +17,19 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Resolution configurations
+  const getQualitySettings = () => {
+    switch (quality) {
+      case "high":
+        return { width: 640, height: 480, compression: 0.85 };
+      case "low":
+        return { width: 200, height: 150, compression: 0.5 };
+      case "medium":
+      default:
+        return { width: 480, height: 360, compression: 0.75 };
+    }
+  };
 
   // Sync savedImage changes
   useEffect(() => {
@@ -89,17 +103,15 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
       const ctx = canvas.getContext("2d");
 
       if (ctx) {
-        // Downscale to a compact resolution (200x150)
-        // This keeps the image sharp enough for evidence, saves Firestore storage,
-        // and stays under Excel's cell character limit of 32,767 characters!
-        canvas.width = 200;
-        canvas.height = 150;
+        const { width, height, compression } = getQualitySettings();
+        canvas.width = width;
+        canvas.height = height;
 
         // Draw video frame resized to canvas
-        ctx.drawImage(video, 0, 0, 200, 150);
+        ctx.drawImage(video, 0, 0, width, height);
 
-        // Convert to Base64 with high compression quality (0.5)
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.5);
+        // Convert to Base64 with configured quality
+        const dataUrl = canvas.toDataURL("image/jpeg", compression);
         setCapturedImage(dataUrl);
         onCapture(dataUrl);
         stopCamera();
@@ -117,13 +129,13 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
           const canvas = document.createElement("canvas");
           const ctx = canvas.getContext("2d");
           if (ctx) {
-            // Downscale to a compact resolution (200x150)
-            canvas.width = 200;
-            canvas.height = 150;
-            ctx.drawImage(img, 0, 0, 200, 150);
+            const { width, height, compression } = getQualitySettings();
+            canvas.width = width;
+            canvas.height = height;
+            ctx.drawImage(img, 0, 0, width, height);
             
-            // Convert to Base64 with high compression quality (0.5)
-            const compressedBase64 = canvas.toDataURL("image/jpeg", 0.5);
+            // Convert to Base64 with configured quality
+            const compressedBase64 = canvas.toDataURL("image/jpeg", compression);
             setCapturedImage(compressedBase64);
             onCapture(compressedBase64);
           }
@@ -210,13 +222,16 @@ export default function CameraCapture({ onCapture, savedImage }: CameraCapturePr
             <div className="absolute top-2 right-2 bg-emerald-500/95 text-[10px] text-black font-sans px-2 py-0.5 rounded flex items-center gap-1 font-semibold animate-pulse shadow-md">
               <Video size={10} /> REC LIVE
             </div>
+            <div className="absolute bottom-2 right-2 bg-stone-900/90 text-[10px] text-stone-300 font-sans px-2 py-0.5 rounded border border-stone-700">
+              {quality === "high" ? "HD 640x480" : quality === "low" ? "Low 200x150" : "SD 480x360"}
+            </div>
           </div>
         )}
 
         {/* Captured state banner */}
         {!isActive && capturedImage && (
           <div className="absolute bottom-2 left-2 bg-emerald-500 text-stone-950 font-sans text-xs px-2.5 py-1 rounded-md font-semibold flex items-center gap-1.5 shadow-lg">
-            <Check size={14} strokeWidth={3} /> แนบรูปภาพแล้ว
+            <Check size={14} strokeWidth={3} /> แนบรูปภาพแล้ว ({quality === "high" ? "ความละเอียดสูง" : quality === "low" ? "ประหยัดพื้นที่" : "ความละเอียดมาตรฐาน"})
           </div>
         )}
       </div>
