@@ -147,12 +147,30 @@ const isDateYesterday = (date: Date) => {
   );
 };
 
+// Helper to keep only logs from the last 7 days (including today) counting from current date
+const filterLast7Days = (logsList: AlcoholTestLog[]): AlcoholTestLog[] => {
+  try {
+    const partsNow = getBangkokDateParts(new Date());
+    // Create local midnight of 6 days ago (so today + 6 previous days = 7 days)
+    const limitDate = new Date(partsNow.year, partsNow.month, partsNow.day - 6);
+    return logsList.filter(log => {
+      const logParts = getBangkokDateParts(log.timestamp);
+      const logMidnight = new Date(logParts.year, logParts.month, logParts.day);
+      return logMidnight.getTime() >= limitDate.getTime();
+    });
+  } catch (e) {
+    console.error("Error filtering 7 days logs:", e);
+    return logsList;
+  }
+};
+
 export default function App() {
   // 1. Core State
   const [logs, setLogs] = useState<AlcoholTestLog[]>(() => {
     try {
       const local = localStorage.getItem("alcohol_logs");
-      return local ? JSON.parse(local) : [];
+      const parsed = local ? JSON.parse(local) : [];
+      return filterLast7Days(parsed);
     } catch {
       return [];
     }
@@ -459,6 +477,7 @@ export default function App() {
 
   const deletedRecordsRef = useRef<Map<string, string>>(new Map());
   const lastSystemDateRef = useRef<Date>(new Date());
+  const attemptedPurgeIdsRef = useRef<Set<string>>(new Set());
 
   // Load initial deleted records cache from localStorage
   useEffect(() => {
@@ -470,6 +489,71 @@ export default function App() {
       console.error("Error parsing local deleted records:", e);
     }
   }, []);
+
+  // Auto-purge logs older than 7 days from Firestore & local state
+  useEffect(() => {
+    if (!isLoggedIn || logs.length === 0) return;
+
+    const partsNow = getBangkokDateParts(new Date());
+    const limitDate = new Date(partsNow.year, partsNow.month, partsNow.day - 6);
+
+    // Find logs that are older than 7 days
+    const oldLogs = logs.filter(log => {
+      const logParts = getBangkokDateParts(log.timestamp);
+      const logMidnight = new Date(logParts.year, logParts.month, logParts.day);
+      return logMidnight.getTime() < limitDate.getTime();
+    });
+
+    const unattemptedOldLogs = oldLogs.filter(log => !attemptedPurgeIdsRef.current.has(log.id));
+
+    if (unattemptedOldLogs.length > 0) {
+      console.log(`[Auto Purge] Found ${unattemptedOldLogs.length} logs older than 7 days. Starting auto-purge...`);
+      
+      // Instantly mark them as attempted to prevent duplicate execution
+      unattemptedOldLogs.forEach(log => attemptedPurgeIdsRef.current.add(log.id));
+
+      const runPurge = async () => {
+        try {
+          const chunkSize = 300;
+          const ops: Array<{ type: "delete" | "set"; ref: any; data?: any }> = [];
+
+          unattemptedOldLogs.forEach(log => {
+            ops.push({ type: "delete", ref: doc(db, "alcohol_logs", log.id) });
+            ops.push({ type: "set", ref: doc(db, "deleted_records", log.id), data: { id: log.id, type: "log", timestamp: new Date().toISOString() } });
+          });
+
+          for (let i = 0; i < ops.length; i += chunkSize) {
+            const chunk = ops.slice(i, i + chunkSize);
+            const batch = writeBatch(db);
+            chunk.forEach(op => {
+              if (op.type === "set") {
+                batch.set(op.ref, op.data);
+              } else {
+                batch.delete(op.ref);
+              }
+            });
+            await batch.commit();
+          }
+
+          // Update local state instantly so the UI reflects the change immediately
+          const remainingLogs = logs.filter(l => !unattemptedOldLogs.some(ol => ol.id === l.id));
+          setLogs(remainingLogs);
+          logsRef.current = remainingLogs;
+          saveLogsToLocalStorage(remainingLogs);
+
+          showNotification(
+            `ระบบทำการลบประวัติที่เก่ากว่า 7 วันออกโดยอัตโนมัติจำนวน ${unattemptedOldLogs.length} รายการ`,
+            "info",
+            "ทำความสะอาดข้อมูลอัตโนมัติ"
+          );
+        } catch (err) {
+          console.error("[Auto Purge] Error performing purge:", err);
+        }
+      };
+
+      runPurge();
+    }
+  }, [isLoggedIn, logs]);
 
   // Helper to save logs safely to localStorage by stripping base64 photos/signatures on older items to prevent QuotaExceededError
   const saveLogsToLocalStorage = (logsList: AlcoholTestLog[]) => {
@@ -681,8 +765,9 @@ export default function App() {
     const loadLocalStorageFallback = () => {
       const localLogsStr = localStorage.getItem("alcohol_logs");
       const localLogs = localLogsStr ? JSON.parse(localLogsStr) : [];
-      logsRef.current = localLogs;
-      setLogs(localLogs);
+      const filteredLogs = filterLast7Days(localLogs);
+      logsRef.current = filteredLogs;
+      setLogs(filteredLogs);
 
       const localEmployeesStr = localStorage.getItem("alcohol_employees");
       const localEmployees = localEmployeesStr ? JSON.parse(localEmployeesStr) : REGISTERED_EMPLOYEES;
@@ -822,11 +907,12 @@ export default function App() {
           safeLocalStorageSetItem("alcohol_logs_seeded", "true");
 
           const activeFetched = fetchedLogs.filter(l => !(deletedRecordsRef.current.has(l.id) && deletedRecordsRef.current.get(l.id) === "log"));
-          activeFetched.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+          const activeFetchedFiltered = filterLast7Days(activeFetched);
+          activeFetchedFiltered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
-          logsRef.current = activeFetched;
-          setLogs(activeFetched);
-          saveLogsToLocalStorage(activeFetched);
+          logsRef.current = activeFetchedFiltered;
+          setLogs(activeFetchedFiltered);
+          saveLogsToLocalStorage(activeFetchedFiltered);
           
           checkAllLoaded("logs");
         }, (err) => handleConnectionError("logs", err));
@@ -2044,11 +2130,11 @@ export default function App() {
       });
       const localLogsStr = localStorage.getItem("alcohol_logs");
       const localLogs: AlcoholTestLog[] = localLogsStr ? JSON.parse(localLogsStr) : [];
-      const activeLogs = fetchedLogs.filter(l => !(deletedMap.has(l.id) && deletedMap.get(l.id) === "log"));
+      const activeLogs = filterLast7Days(fetchedLogs.filter(l => !(deletedMap.has(l.id) && deletedMap.get(l.id) === "log")));
       const mergedLogsMap = new Map<string, AlcoholTestLog>();
       activeLogs.forEach(log => mergedLogsMap.set(log.id, log));
       
-      const baseLocalLogs = logsRef.current.length > 0 ? logsRef.current : localLogs;
+      const baseLocalLogs = filterLast7Days(logsRef.current.length > 0 ? logsRef.current : localLogs);
       const logUploadPromises: Promise<void>[] = [];
       baseLocalLogs.forEach(localLog => {
         if (isMockLog(localLog.id)) return;
@@ -2832,6 +2918,91 @@ export default function App() {
         }
 
         if (tempParsed.length === 0) {
+          // Positional fallback: parse rows directly without strict header keys
+          console.log("[Excel Import] No header-matched data found. Trying positional fallback...");
+          bestRows.forEach((row) => {
+            if (!row || row.length === 0) return;
+            // Clean empty cells
+            const cells = row.map(c => String(c ?? "").trim()).filter(Boolean);
+            if (cells.length === 0) return;
+            
+            // Skip if this row looks like a header itself
+            const joined = cells.join(" ").toLowerCase();
+            if (joined.includes("ชื่อ") || joined.includes("แผนก") || joined.includes("รหัส") || joined.includes("ตำแหน่ง") || joined.includes("name") || joined.includes("id")) {
+              return; // Skip header row
+            }
+            
+            // Map columns positionally
+            let idVal = "";
+            let nameVal = "";
+            let deptVal = "";
+            let roleVal = "";
+            
+            // If first cell is a small number (like serial number 1, 2, 3...), we skip it and shift columns
+            let startIdx = 0;
+            if (!isNaN(Number(row[0])) && Number(row[0]) < 10000 && row[0] !== "") {
+              startIdx = 1;
+            }
+            
+            // Now extract values from remaining cells
+            const remainingCells = row.slice(startIdx).map(c => String(c ?? "").trim()).filter(Boolean);
+            if (remainingCells.length === 0) return;
+            
+            if (remainingCells.length === 1) {
+              nameVal = remainingCells[0];
+            } else if (remainingCells.length === 2) {
+              if (remainingCells[0].match(/^[a-zA-Z0-9\-_]+$/)) {
+                idVal = remainingCells[0];
+                nameVal = remainingCells[1];
+              } else {
+                nameVal = remainingCells[0];
+                deptVal = remainingCells[1];
+              }
+            } else {
+              // 3 or more cells
+              remainingCells.forEach(cell => {
+                if (cell.match(/^[a-zA-Z0-9\-_]{3,15}$/) && !idVal) {
+                  idVal = cell;
+                } else if ((cell.includes("นาย") || cell.includes("นาง") || cell.includes("น.ส.") || cell.includes(" ") || cell.match(/^[ก-๙a-zA-Z\s]{5,35}$/)) && !nameVal) {
+                  nameVal = cell;
+                } else if ((cell.includes("ฝ่าย") || cell.includes("แผนก") || cell.includes("จัดส่ง") || cell.includes("ผลิต") || cell.includes("คลัง") || cell.includes("ออฟฟิศ") || cell.includes("สำนักงาน") || cell.includes("บริหาร") || cell.includes("ขนส่ง")) && !deptVal) {
+                  deptVal = cell;
+                } else if (!roleVal) {
+                  roleVal = cell;
+                }
+              });
+              
+              // Fallback assign by index if some are still empty
+              if (!nameVal) nameVal = remainingCells[0];
+              if (!deptVal) deptVal = remainingCells[1] || "ฝ่ายผลิต";
+              if (!roleVal) roleVal = remainingCells[2] || "พนักงานทั่วไป";
+            }
+            
+            if (nameVal && nameVal.length >= 2 && !nameVal.includes("รวม") && !nameVal.includes("total")) {
+              if (!idVal) {
+                idVal = `EMP-${Math.floor(100000 + Math.random() * 900000)}`;
+              }
+              idVal = idVal.trim().replace(/[\/\\]/g, "-");
+              
+              const randomCol = defaultColors[Math.floor(Math.random() * defaultColors.length)];
+              const fallbackPhoto = svgToBase64(`<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 100 100'><rect width='100' height='100' fill='${randomCol}'/><circle cx='50' cy='38' r='18' fill='white'/><path d='M22 80c0-12 14-18 28-18s28 6 28 18' fill='white'/><text x='50' y='92' fill='white' font-size='6.5' font-family='sans-serif' font-weight='bold' text-anchor='middle'>PROFILE: ${idVal}</text></svg>`);
+              
+              // Prevent duplicate in our parsed list
+              const isDup = tempParsed.some(emp => emp.name.toLowerCase() === nameVal.toLowerCase() || emp.id.toLowerCase() === idVal.toLowerCase());
+              if (!isDup) {
+                tempParsed.push({
+                  id: idVal,
+                  name: nameVal,
+                  department: deptVal || "ฝ่ายผลิต",
+                  role: roleVal || "พนักงานทั่วไป",
+                  photo: fallbackPhoto
+                });
+              }
+            }
+          });
+        }
+
+        if (tempParsed.length === 0) {
           if (skippedDuplicateCount > 0) {
             setExcelFileError(`ไม่พบรายชื่อในไฟล์ หรือรายชื่อทั้งหมดซ้ำซ้อนภายในไฟล์เอง`);
           } else {
@@ -2860,60 +3031,56 @@ export default function App() {
   const handleConfirmExcelImport = () => {
     if (parsedEmployees.length === 0) return;
     
-    const runImport = () => {
-      let updated = [...employees];
-      const newDepts = [...departments];
-      let addedCount = 0;
-      let updatedCount = 0;
-      let skippedCount = 0;
+    let updated = [...employees];
+    const newDepts = [...departments];
+    let addedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    
+    parsedEmployees.forEach(newEmp => {
+      if (newEmp.department && !newDepts.some(d => d.toLowerCase() === newEmp.department.toLowerCase())) {
+        newDepts.push(newEmp.department);
+      }
       
-      parsedEmployees.forEach(newEmp => {
-        if (newEmp.department && !newDepts.some(d => d.toLowerCase() === newEmp.department.toLowerCase())) {
-          newDepts.push(newEmp.department);
-        }
-        
-        const existingIdx = updated.findIndex(emp => 
-          emp.id.trim().toLowerCase() === newEmp.id.trim().toLowerCase() ||
-          emp.name.trim().toLowerCase() === newEmp.name.trim().toLowerCase()
-        );
-        if (existingIdx >= 0) {
-          if (importOption === "OVERWRITE") {
-            const existingEmp = updated[existingIdx];
-            updated[existingIdx] = {
-              ...existingEmp,
-              name: newEmp.name || existingEmp.name,
-              department: newEmp.department || existingEmp.department,
-              role: newEmp.role || existingEmp.role,
-              photo: newEmp.photo && !newEmp.photo.startsWith("data:image/svg+xml") ? newEmp.photo : existingEmp.photo,
-              updatedAt: new Date().toISOString()
-            };
-            updatedCount++;
-          } else {
-            skippedCount++;
-          }
+      const existingIdx = updated.findIndex(emp => 
+        emp.id.trim().toLowerCase() === newEmp.id.trim().toLowerCase() ||
+        emp.name.trim().toLowerCase() === newEmp.name.trim().toLowerCase()
+      );
+      if (existingIdx >= 0) {
+        if (importOption === "OVERWRITE") {
+          const existingEmp = updated[existingIdx];
+          updated[existingIdx] = {
+            ...existingEmp,
+            name: newEmp.name || existingEmp.name,
+            department: newEmp.department || existingEmp.department,
+            role: newEmp.role || existingEmp.role,
+            photo: newEmp.photo && !newEmp.photo.startsWith("data:image/svg+xml") ? newEmp.photo : existingEmp.photo,
+            updatedAt: new Date().toISOString()
+          };
+          updatedCount++;
         } else {
-          updated.push(newEmp);
-          addedCount++;
+          skippedCount++;
         }
-      });
-      
-      saveEmployees(updated);
-      saveDepartments(newDepts);
-      
-      setParsedEmployees([]);
-      setShowExcelPreview(false);
-      
-      let summaryParts = [];
-      if (addedCount > 0) summaryParts.push(`เพิ่มใหม่ ${addedCount} คน`);
-      if (updatedCount > 0) summaryParts.push(`อัปเดตข้อมูลเดิม ${updatedCount} คน`);
-      if (skippedCount > 0) summaryParts.push(`ละเว้น/ข้าม ${skippedCount} คน`);
-      
-      let summaryStr = `นำเข้าพนักงานเรียบร้อย: ` + (summaryParts.length > 0 ? summaryParts.join(", ") : "ไม่มีการเปลี่ยนแปลง");
-      
-      showNotification(summaryStr, "success", "นำเข้าข้อมูลสำเร็จ");
-    };
-
-    requestPermission(`นำเข้าข้อมูลพนักงานจากไฟล์จำนวน ${parsedEmployees.length} คน`, runImport);
+      } else {
+        updated.push(newEmp);
+        addedCount++;
+      }
+    });
+    
+    saveEmployees(updated);
+    saveDepartments(newDepts);
+    
+    setParsedEmployees([]);
+    setShowExcelPreview(false);
+    
+    let summaryParts = [];
+    if (addedCount > 0) summaryParts.push(`เพิ่มใหม่ ${addedCount} คน`);
+    if (updatedCount > 0) summaryParts.push(`อัปเดตข้อมูลเดิม ${updatedCount} คน`);
+    if (skippedCount > 0) summaryParts.push(`ละเว้น/ข้าม ${skippedCount} คน`);
+    
+    let summaryStr = `นำเข้าพนักงานเรียบร้อย: ` + (summaryParts.length > 0 ? summaryParts.join(", ") : "ไม่มีการเปลี่ยนแปลง");
+    
+    showNotification(summaryStr, "success", "นำเข้าข้อมูลสำเร็จ");
   };
 
   const handleBulkPasteImport = () => {
@@ -5585,20 +5752,42 @@ export default function App() {
             </div>
 
             {/* Collapsible Employee Database Management Form & Directory Roster */}
-            <div className="border-t border-slate-100 pt-3">
-              <button
-                type="button"
-                onClick={() => setShowManageDb(!showManageDb)}
-                className="w-full flex items-center justify-between text-xs text-slate-600 hover:text-indigo-600 font-sans font-bold bg-slate-50 p-2.5 rounded-xl border border-slate-200 transition"
-              >
-                <span className="flex items-center gap-1.5">
-                  <Settings size={14} className="text-slate-500" />
-                  จัดการฐานข้อมูลและสตรีมรายชื่อพนักงานทั้งหมด ({employees.length} คน)
-                </span>
-                <span className="bg-white border border-slate-200 px-2.5 py-0.5 rounded text-[10px] text-indigo-600 shadow-sm">
-                  {showManageDb ? "ซ่อนเมนูจัดการ [ ▲ ]" : "ขยายฐานข้อมูลรายชื่อ [ ▼ ]"}
-                </span>
-              </button>
+            <div className="border-t border-slate-100 pt-3 space-y-2">
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowManageDb(!showManageDb)}
+                  className="flex-1 flex items-center justify-between text-xs text-slate-600 hover:text-indigo-600 font-sans font-bold bg-slate-50 p-2.5 rounded-xl border border-slate-200 transition"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Settings size={14} className="text-slate-500" />
+                    จัดการฐานข้อมูลและสตรีมรายชื่อพนักงานทั้งหมด ({employees.length} คน)
+                  </span>
+                  <span className="bg-white border border-slate-200 px-2.5 py-0.5 rounded text-[10px] text-indigo-600 shadow-sm">
+                    {showManageDb ? "ซ่อนเมนูจัดการ [ ▲ ]" : "ขยายฐานข้อมูลรายชื่อ [ ▼ ]"}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowManageDb(true);
+                    setImportTab("EXCEL");
+                    setExcelFileError(null);
+                    setTimeout(() => {
+                      const fileInput = document.getElementById("excel-file-upload-input");
+                      if (fileInput) {
+                        (fileInput as HTMLInputElement).click();
+                      }
+                    }, 120);
+                  }}
+                  className="flex items-center justify-center gap-2 text-xs text-emerald-700 hover:text-white font-sans font-bold bg-emerald-50 hover:bg-emerald-600 border border-emerald-200 hover:border-emerald-600 py-2.5 px-4 rounded-xl transition cursor-pointer shadow-xs active:scale-98 shrink-0 group"
+                  title="คลิกเพื่อนำเข้าไฟล์รายชื่อพนักงานจาก Excel หรือ CSV ลงระบบทันที"
+                >
+                  <FileSpreadsheet size={14} className="text-emerald-600 group-hover:text-white transition" />
+                  <span>📂 นำเข้าไฟล์ Excel / CSV [ด่วน]</span>
+                </button>
+              </div>
 
               <AnimatePresence>
                 {showManageDb && (
